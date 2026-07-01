@@ -8,9 +8,7 @@ import {
   Inbox,
   Mail,
   MessageCircle,
-  Search,
   Sparkles,
-  User,
   Users,
 } from "lucide-react";
 
@@ -27,15 +25,7 @@ type Props = {
 type BusinessRow = {
   id: string;
   name: string;
-  slug: string;
-};
-
-type MessageRow = {
-  id: string;
-  sender: string | null;
-  content: string | null;
-  ai_generated: boolean | null;
-  created_at: string;
+  slug: string | null;
 };
 
 type ConversationRow = {
@@ -45,12 +35,45 @@ type ConversationRow = {
   customer_email: string | null;
   channel: string | null;
   status: string | null;
+  subject?: string | null;
   last_message: string | null;
   unread_count: number | null;
+  metadata: Record<string, unknown> | null;
   created_at: string;
   updated_at: string;
-  messages?: MessageRow[];
 };
+
+function normalizeConversation(row: Record<string, unknown>): ConversationRow {
+  return {
+    id: String(row.id),
+    business_id: String(row.business_id),
+    customer_name:
+      typeof row.customer_name === "string" ? row.customer_name : null,
+    customer_email:
+      typeof row.customer_email === "string" ? row.customer_email : null,
+    channel: typeof row.channel === "string" ? row.channel : "storefront",
+    status: typeof row.status === "string" ? row.status : "open",
+    subject: typeof row.subject === "string" ? row.subject : null,
+    last_message:
+      typeof row.last_message === "string" ? row.last_message : null,
+    unread_count:
+      typeof row.unread_count === "number" ? row.unread_count : 0,
+    metadata:
+      typeof row.metadata === "object" && row.metadata !== null
+        ? (row.metadata as Record<string, unknown>)
+        : null,
+    created_at:
+      typeof row.created_at === "string"
+        ? row.created_at
+        : new Date().toISOString(),
+    updated_at:
+      typeof row.updated_at === "string"
+        ? row.updated_at
+        : typeof row.created_at === "string"
+          ? row.created_at
+          : new Date().toISOString(),
+  };
+}
 
 async function loadConversations(id: string) {
   const [businessResult, conversationsResult] = await Promise.all([
@@ -62,27 +85,7 @@ async function loadConversations(id: string) {
 
     supabaseAdmin
       .from("conversations")
-      .select(
-        `
-        id,
-        business_id,
-        customer_name,
-        customer_email,
-        channel,
-        status,
-        last_message,
-        unread_count,
-        created_at,
-        updated_at,
-        messages (
-          id,
-          sender,
-          content,
-          ai_generated,
-          created_at
-        )
-      `
-      )
+      .select("*")
       .eq("business_id", id)
       .order("updated_at", { ascending: false }),
   ]);
@@ -97,7 +100,9 @@ async function loadConversations(id: string) {
 
   return {
     business: businessResult.data as BusinessRow,
-    conversations: (conversationsResult.data ?? []) as ConversationRow[],
+    conversations: (
+      (conversationsResult.data ?? []) as Record<string, unknown>[]
+    ).map(normalizeConversation),
   };
 }
 
@@ -111,11 +116,11 @@ function formatDate(date: string) {
 
 function getStatusStyles(status: string | null) {
   if (status === "closed" || status === "resolved") {
-    return "border-green-500/20 bg-green-500/10 text-green-300";
+    return "border-emerald-400/20 bg-emerald-400/10 text-emerald-300";
   }
 
   if (status === "pending") {
-    return "border-yellow-500/20 bg-yellow-500/10 text-yellow-300";
+    return "border-yellow-400/20 bg-yellow-400/10 text-yellow-200";
   }
 
   return "border-white/10 bg-white/[0.04] text-zinc-300";
@@ -123,7 +128,7 @@ function getStatusStyles(status: string | null) {
 
 function getChannelIcon(channel: string | null) {
   if (channel === "email") return Mail;
-  if (channel === "ai-chat") return Bot;
+  if (channel === "ai-chat" || channel === "storefront") return Bot;
   return MessageCircle;
 }
 
@@ -151,10 +156,11 @@ export default async function ConversationsPage({ params }: Props) {
     0
   );
 
-  const aiMessages = conversations.reduce((sum, conversation) => {
-    const messages = conversation.messages ?? [];
-    return sum + messages.filter((message) => message.ai_generated).length;
-  }, 0);
+  const uniqueCustomers = new Set(
+    conversations
+      .map((conversation) => conversation.customer_email)
+      .filter(Boolean)
+  );
 
   const statCards = [
     {
@@ -173,135 +179,131 @@ export default async function ConversationsPage({ params }: Props) {
       icon: Clock,
     },
     {
-      label: "AI Replies",
-      value: aiMessages.toString(),
-      icon: Bot,
+      label: "Customers",
+      value: uniqueCustomers.size.toString(),
+      icon: Users,
     },
   ];
 
   return (
-    <main className="min-h-screen bg-black text-white">
-      <section className="mx-auto max-w-7xl px-6 py-10">
+    <main className="min-h-screen bg-[#050505] text-white">
+      <section className="mx-auto flex w-full max-w-7xl flex-col gap-8 px-4 py-6 sm:px-6 lg:px-8">
         <Link
           href={`/dashboard/business/${business.id}`}
-          className="mb-8 inline-flex items-center gap-2 text-yellow-400 hover:text-yellow-300"
+          className="inline-flex w-fit items-center gap-2 text-sm text-zinc-400 transition hover:text-white"
         >
-          <ArrowLeft size={18} />
+          <ArrowLeft className="h-4 w-4" />
           Back to Business
         </Link>
 
-        <div className="rounded-3xl border border-yellow-400/20 bg-yellow-400/10 p-8">
-          <p className="text-sm uppercase tracking-[0.35em] text-yellow-400">
-            Conversation Inbox
-          </p>
+        <div className="overflow-hidden rounded-3xl border border-white/10 bg-white/[0.03] shadow-2xl shadow-black/30">
+          <div className="relative p-5 sm:p-8 lg:p-10">
+            <div className="absolute right-0 top-0 h-64 w-64 rounded-full bg-yellow-400/10 blur-3xl" />
+            <div className="absolute bottom-0 left-0 h-64 w-64 rounded-full bg-white/5 blur-3xl" />
 
-          <h1 className="mt-4 text-4xl font-bold md:text-6xl">
-            Messages for {business.name}
-          </h1>
+            <div className="relative z-10 flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
+              <div>
+                <div className="inline-flex items-center gap-2 rounded-full border border-yellow-400/20 bg-yellow-400/10 px-3 py-1 text-xs font-bold uppercase tracking-wide text-yellow-200">
+                  <Inbox className="h-3.5 w-3.5" />
+                  Conversation Inbox
+                </div>
 
-          <p className="mt-5 max-w-3xl leading-7 text-zinc-300">
-            Manage customer messages, AI chat conversations, support requests,
-            sales questions, and follow-ups from one unified inbox.
-          </p>
+                <h1 className="mt-5 text-3xl font-black tracking-tight sm:text-5xl lg:text-6xl">
+                  Messages for {business.name}
+                </h1>
 
-          <div className="mt-8 flex flex-wrap gap-3">
-            <Link
-              href={`/dashboard/business/${business.id}/inbox`}
-              className="inline-flex items-center gap-2 rounded-2xl bg-yellow-400 px-6 py-3 font-bold text-black transition hover:bg-yellow-300"
-            >
-              <Inbox size={18} />
-              Open Inbox
-            </Link>
+                <p className="mt-4 max-w-3xl text-sm leading-6 text-zinc-400 sm:text-base">
+                  Manage customer messages, AI chat conversations, support
+                  requests, sales questions, and follow-ups from one unified
+                  inbox.
+                </p>
+              </div>
 
-            <Link
-              href={`/dashboard/business/${business.id}/employees`}
-              className="inline-flex items-center gap-2 rounded-2xl border border-white/10 px-6 py-3 font-bold text-white transition hover:border-yellow-400/50"
-            >
-              <Bot size={18} />
-              AI Employees
-            </Link>
+              <div className="flex flex-col gap-3 sm:flex-row">
+                {business.slug ? (
+                  <Link
+                    href={`/storefront/${business.slug}`}
+                    className="inline-flex items-center justify-center gap-2 rounded-2xl bg-yellow-400 px-5 py-3 text-sm font-black text-black transition hover:bg-yellow-300"
+                  >
+                    Preview Storefront
+                    <Sparkles className="h-4 w-4" />
+                  </Link>
+                ) : null}
 
-            <Link
-              href={`/dashboard/business/${business.id}/automation`}
-              className="inline-flex items-center gap-2 rounded-2xl border border-white/10 px-6 py-3 font-bold text-white transition hover:border-yellow-400/50"
-            >
-              <Sparkles size={18} />
-              Automations
-            </Link>
+                <Link
+                  href={`/dashboard/business/${business.id}/automation`}
+                  className="inline-flex items-center justify-center gap-2 rounded-2xl border border-white/10 bg-black/40 px-5 py-3 text-sm font-bold text-white transition hover:border-yellow-400/40 hover:text-yellow-200"
+                >
+                  Automations
+                  <Bot className="h-4 w-4" />
+                </Link>
+              </div>
+            </div>
           </div>
         </div>
 
-        <div className="mt-8 grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           {statCards.map((card) => {
             const Icon = card.icon;
 
             return (
               <div
                 key={card.label}
-                className="rounded-3xl border border-white/10 bg-white/[0.04] p-6"
+                className="rounded-3xl border border-white/10 bg-white/[0.03] p-5"
               >
-                <div className="mb-5 flex h-12 w-12 items-center justify-center rounded-2xl bg-yellow-400/10 text-yellow-400">
-                  <Icon size={22} />
+                <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-yellow-400/10 text-yellow-200">
+                  <Icon className="h-5 w-5" />
                 </div>
 
-                <p className="text-sm text-zinc-400">{card.label}</p>
-                <h2 className="mt-2 text-3xl font-bold">{card.value}</h2>
+                <p className="text-xs text-zinc-500">{card.label}</p>
+                <h2 className="mt-2 text-3xl font-black">{card.value}</h2>
               </div>
             );
           })}
         </div>
 
-        <div className="mt-8 grid gap-5 md:grid-cols-3">
-          <div className="rounded-3xl border border-white/10 bg-white/[0.04] p-6">
-            <CheckCircle2 className="mb-4 text-yellow-400" />
-            <p className="text-sm text-zinc-400">Resolved</p>
-            <h2 className="mt-2 text-3xl font-bold">
+        <div className="grid gap-4 md:grid-cols-3">
+          <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
+            <CheckCircle2 className="h-7 w-7 text-yellow-200" />
+            <p className="mt-4 text-xs text-zinc-500">Resolved</p>
+            <h2 className="mt-2 text-3xl font-black">
               {resolvedConversations.length}
             </h2>
           </div>
 
-          <div className="rounded-3xl border border-white/10 bg-white/[0.04] p-6">
-            <Users className="mb-4 text-yellow-400" />
-            <p className="text-sm text-zinc-400">Customers</p>
-            <h2 className="mt-2 text-3xl font-bold">
-              {
-                new Set(
-                  conversations
-                    .map((conversation) => conversation.customer_email)
-                    .filter(Boolean)
-                ).size
-              }
-            </h2>
+          <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
+            <Bot className="h-7 w-7 text-yellow-200" />
+            <p className="mt-4 text-xs text-zinc-500">AI Inbox Engine</p>
+            <h2 className="mt-2 text-3xl font-black">Ready</h2>
           </div>
 
-          <div className="rounded-3xl border border-white/10 bg-white/[0.04] p-6">
-            <Sparkles className="mb-4 text-yellow-400" />
-            <p className="text-sm text-zinc-400">AI Inbox Engine</p>
-            <h2 className="mt-2 text-3xl font-bold">Ready</h2>
+          <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
+            <Sparkles className="h-7 w-7 text-yellow-200" />
+            <p className="mt-4 text-xs text-zinc-500">Inbox Status</p>
+            <h2 className="mt-2 text-3xl font-black">Live</h2>
           </div>
         </div>
 
-        <div className="mt-8 rounded-3xl border border-white/10 bg-white/[0.04] p-6">
+        <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5 sm:p-6">
           <div className="mb-6 flex flex-col justify-between gap-4 md:flex-row md:items-center">
             <div>
-              <h2 className="text-2xl font-bold">Conversation Database</h2>
+              <h2 className="text-2xl font-black">Conversation Database</h2>
               <p className="mt-2 text-sm text-zinc-400">
                 Conversations are created when customers chat, email, submit
                 forms, or contact your AI employee.
               </p>
             </div>
 
-            <div className="flex items-center gap-3 rounded-2xl border border-white/10 bg-black/40 px-4 py-3 text-zinc-500">
-              <Search size={18} />
-              <span className="text-sm">Search coming soon...</span>
+            <div className="rounded-full border border-yellow-400/20 bg-yellow-400/10 px-4 py-2 text-xs font-bold text-yellow-200">
+              Step 7 adds search, reply, close, and inbox controls
             </div>
           </div>
 
           {conversations.length === 0 ? (
-            <div className="rounded-3xl border border-white/10 bg-black/40 p-10 text-center">
-              <MessageCircle size={56} className="mx-auto text-yellow-400" />
+            <div className="rounded-3xl border border-dashed border-white/10 bg-black/40 p-10 text-center">
+              <MessageCircle className="mx-auto h-14 w-14 text-yellow-200" />
 
-              <h3 className="mt-5 text-2xl font-bold">
+              <h3 className="mt-5 text-2xl font-black">
                 No conversations yet
               </h3>
 
@@ -310,16 +312,18 @@ export default async function ConversationsPage({ params }: Props) {
                 your business or talks to your AI employee.
               </p>
 
-              <Link
-                href={`/storefront/${business.slug}`}
-                className="mt-6 inline-flex rounded-2xl bg-yellow-400 px-6 py-3 font-bold text-black transition hover:bg-yellow-300"
-              >
-                Preview Storefront
-              </Link>
+              {business.slug ? (
+                <Link
+                  href={`/storefront/${business.slug}`}
+                  className="mt-6 inline-flex rounded-2xl bg-yellow-400 px-6 py-3 text-sm font-black text-black transition hover:bg-yellow-300"
+                >
+                  Preview Storefront
+                </Link>
+              ) : null}
             </div>
           ) : (
             <div className="overflow-hidden rounded-3xl border border-white/10">
-              <div className="hidden grid-cols-6 border-b border-white/10 bg-black/60 px-5 py-4 text-sm font-semibold text-zinc-400 lg:grid">
+              <div className="hidden grid-cols-6 border-b border-white/10 bg-black/60 px-5 py-4 text-sm font-bold text-zinc-400 lg:grid">
                 <span>Customer</span>
                 <span>Channel</span>
                 <span>Status</span>
@@ -338,39 +342,27 @@ export default async function ConversationsPage({ params }: Props) {
                       className="grid gap-4 bg-black/30 p-5 lg:grid-cols-6 lg:items-center"
                     >
                       <div>
-                        <div className="flex items-center gap-3">
-                          <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-yellow-400/10 text-yellow-400">
-                            <User size={18} />
-                          </div>
+                        <p className="font-bold">
+                          {conversation.customer_name || "Website Visitor"}
+                        </p>
 
-                          <div>
-                            <p className="font-bold">
-                              {conversation.customer_name || "Website Visitor"}
-                            </p>
-
-                            <p className="mt-1 text-xs text-zinc-500">
-                              {conversation.customer_email || "No email"}
-                            </p>
-                          </div>
-                        </div>
+                        <p className="mt-1 text-xs text-zinc-500">
+                          {conversation.customer_email || "No email"}
+                        </p>
                       </div>
 
-                      <div>
-                        <span className="inline-flex w-fit items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-xs capitalize text-zinc-300">
-                          <ChannelIcon size={14} />
-                          {conversation.channel || "website"}
-                        </span>
-                      </div>
+                      <span className="inline-flex w-fit items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-xs font-bold capitalize text-zinc-300">
+                        <ChannelIcon className="h-3.5 w-3.5" />
+                        {conversation.channel || "storefront"}
+                      </span>
 
-                      <div>
-                        <span
-                          className={`inline-flex w-fit items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold capitalize ${getStatusStyles(
-                            conversation.status
-                          )}`}
-                        >
-                          {conversation.status || "open"}
-                        </span>
-                      </div>
+                      <span
+                        className={`inline-flex w-fit rounded-full border px-3 py-1 text-xs font-bold capitalize ${getStatusStyles(
+                          conversation.status
+                        )}`}
+                      >
+                        {conversation.status || "open"}
+                      </span>
 
                       <p className="line-clamp-2 text-sm leading-6 text-zinc-400">
                         {conversation.last_message || "No message preview."}
@@ -380,20 +372,20 @@ export default async function ConversationsPage({ params }: Props) {
                         {formatDate(conversation.updated_at)}
                       </p>
 
-                      <div className="flex flex-wrap justify-start gap-2 lg:justify-end">
-                        {conversation.customer_email && (
+                      <div className="flex justify-start gap-2 lg:justify-end">
+                        {conversation.customer_email ? (
                           <a
                             href={`mailto:${conversation.customer_email}`}
-                            className="inline-flex items-center gap-2 rounded-xl border border-white/10 px-4 py-2 text-sm text-zinc-300 transition hover:border-yellow-400/50 hover:text-yellow-400"
+                            className="inline-flex items-center gap-2 rounded-xl border border-white/10 px-4 py-2 text-sm text-zinc-300 transition hover:border-yellow-400/50 hover:text-yellow-200"
                           >
-                            <Mail size={15} />
+                            <Mail className="h-4 w-4" />
                             Email
                           </a>
-                        )}
+                        ) : null}
 
                         <Link
                           href={`/dashboard/business/${business.id}/crm`}
-                          className="rounded-xl border border-white/10 px-4 py-2 text-sm text-zinc-300 transition hover:border-yellow-400/50 hover:text-yellow-400"
+                          className="rounded-xl border border-white/10 px-4 py-2 text-sm text-zinc-300 transition hover:border-yellow-400/50 hover:text-yellow-200"
                         >
                           CRM
                         </Link>

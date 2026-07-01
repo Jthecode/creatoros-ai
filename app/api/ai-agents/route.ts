@@ -4,11 +4,16 @@ import { supabaseAdmin } from "@/lib/supabase-admin";
 export const dynamic = "force-dynamic";
 
 type AgentRole =
+  | "AI Sales Assistant"
   | "AI Sales Manager"
   | "AI Support Agent"
   | "AI Marketing Assistant"
   | "AI Operations Manager"
-  | "AI Business Assistant";
+  | "AI Business Assistant"
+  | "AI Lead Qualifier"
+  | "AI Onboarding Assistant"
+  | "AI Product Expert"
+  | "AI Business Operator";
 
 type AgentTone =
   | "professional"
@@ -30,54 +35,60 @@ type AgentBody = {
   instructions?: string;
   knowledge?: string;
   avatar_url?: string | null;
+  isActive?: boolean;
   is_active?: boolean;
   metadata?: Record<string, unknown> | null;
 };
 
-function normalizeString(value: unknown) {
+const roles: AgentRole[] = [
+  "AI Sales Assistant",
+  "AI Sales Manager",
+  "AI Support Agent",
+  "AI Marketing Assistant",
+  "AI Operations Manager",
+  "AI Business Assistant",
+  "AI Lead Qualifier",
+  "AI Onboarding Assistant",
+  "AI Product Expert",
+  "AI Business Operator",
+];
+
+const tones: AgentTone[] = [
+  "professional",
+  "friendly",
+  "luxury",
+  "direct",
+  "playful",
+  "premium",
+];
+
+function cleanString(value: unknown) {
   if (typeof value !== "string") return "";
   return value.trim();
 }
 
 function getBusinessId(body: AgentBody) {
-  return normalizeString(body.businessId || body.business_id);
+  return cleanString(body.businessId || body.business_id);
 }
 
 function getOpeningMessage(body: AgentBody) {
-  return normalizeString(body.openingMessage || body.opening_message);
+  return cleanString(body.openingMessage || body.opening_message);
 }
 
 function normalizeRole(value: unknown): AgentRole {
-  const role = normalizeString(value);
-
-  if (
-    role === "AI Sales Manager" ||
-    role === "AI Support Agent" ||
-    role === "AI Marketing Assistant" ||
-    role === "AI Operations Manager" ||
-    role === "AI Business Assistant"
-  ) {
-    return role;
-  }
-
-  return "AI Sales Manager";
+  const role = cleanString(value) as AgentRole;
+  return roles.includes(role) ? role : "AI Sales Assistant";
 }
 
 function normalizeTone(value: unknown): AgentTone {
-  const tone = normalizeString(value).toLowerCase();
+  const tone = cleanString(value).toLowerCase() as AgentTone;
+  return tones.includes(tone) ? tone : "professional";
+}
 
-  if (
-    tone === "professional" ||
-    tone === "friendly" ||
-    tone === "luxury" ||
-    tone === "direct" ||
-    tone === "playful" ||
-    tone === "premium"
-  ) {
-    return tone;
-  }
-
-  return "professional";
+function normalizeActive(body: AgentBody) {
+  if (typeof body.isActive === "boolean") return body.isActive;
+  if (typeof body.is_active === "boolean") return body.is_active;
+  return true;
 }
 
 function getDefaultOpeningMessage(role: AgentRole) {
@@ -89,12 +100,20 @@ function getDefaultOpeningMessage(role: AgentRole) {
     return "Hi! I’m your AI marketing assistant. I can help with campaigns, content, and growth ideas.";
   }
 
-  if (role === "AI Operations Manager") {
+  if (role === "AI Operations Manager" || role === "AI Business Operator") {
     return "Hi! I’m your AI operations assistant. I can help organize tasks, workflows, and business systems.";
   }
 
-  if (role === "AI Business Assistant") {
-    return "Hi! I’m your AI business assistant. How can I help you move the business forward today?";
+  if (role === "AI Lead Qualifier") {
+    return "Hi! I can help you find the right offer and collect the details needed for the next step.";
+  }
+
+  if (role === "AI Onboarding Assistant") {
+    return "Hi! I can help you get started and guide you through the next steps.";
+  }
+
+  if (role === "AI Product Expert") {
+    return "Hi! I can help explain products, compare options, and recommend the best fit.";
   }
 
   return "Hi! I’m your AI sales assistant. I can answer questions, recommend offers, and help customers take the next step.";
@@ -111,12 +130,20 @@ function getDefaultInstructions(role: AgentRole, tone: AgentTone) {
     return `${base} Help create campaign ideas, social captions, email copy, content angles, hooks, and promotional strategies.`;
   }
 
-  if (role === "AI Operations Manager") {
+  if (role === "AI Operations Manager" || role === "AI Business Operator") {
     return `${base} Help organize internal tasks, workflows, automations, customer follow-up, and business systems.`;
   }
 
-  if (role === "AI Business Assistant") {
-    return `${base} Help with planning, product ideas, customer questions, offers, operations, and growth.`;
+  if (role === "AI Lead Qualifier") {
+    return `${base} Ask helpful questions, qualify the customer, collect lead details, and guide serious buyers to the right next step.`;
+  }
+
+  if (role === "AI Onboarding Assistant") {
+    return `${base} Help new customers understand what to do first, explain setup steps, and reduce confusion.`;
+  }
+
+  if (role === "AI Product Expert") {
+    return `${base} Explain products clearly, compare options, recommend the best fit, and answer objections.`;
   }
 
   return `${base} Answer product questions, qualify leads, recommend the best offer, overcome objections respectfully, and guide customers toward checkout.`;
@@ -125,14 +152,35 @@ function getDefaultInstructions(role: AgentRole, tone: AgentTone) {
 function cleanAgent(agent: Record<string, unknown>) {
   return {
     ...agent,
-    openingMessage: agent.opening_message,
     businessId: agent.business_id,
+    openingMessage: agent.opening_message,
+    isActive: agent.is_active,
   };
 }
 
 function getErrorMessage(error: unknown, fallback: string) {
   if (error instanceof Error) return error.message;
   return fallback;
+}
+
+async function trackAgentEvent(params: {
+  businessId: string;
+  event: string;
+  agentId?: string;
+  metadata?: Record<string, unknown>;
+}) {
+  try {
+    await supabaseAdmin.from("analytics_events").insert({
+      business_id: params.businessId,
+      event: params.event,
+      source: "ai_agents",
+      ai_agent_id: params.agentId ?? null,
+      revenue: 0,
+      metadata: params.metadata ?? {},
+    });
+  } catch (error) {
+    console.error("AI agent analytics tracking failed:", error);
+  }
 }
 
 export async function GET(request: NextRequest) {
@@ -142,16 +190,13 @@ export async function GET(request: NextRequest) {
     const businessId = searchParams.get("businessId");
     const agentId = searchParams.get("id");
     const active = searchParams.get("active");
+    const role = searchParams.get("role");
+    const q = searchParams.get("q");
 
     if (!businessId) {
       return NextResponse.json(
-        {
-          success: false,
-          error: "businessId is required.",
-        },
-        {
-          status: 400,
-        }
+        { success: false, error: "businessId is required." },
+        { status: 400 }
       );
     }
 
@@ -159,45 +204,40 @@ export async function GET(request: NextRequest) {
       .from("ai_agents")
       .select("*")
       .eq("business_id", businessId)
-      .order("created_at", {
-        ascending: false,
-      });
+      .order("created_at", { ascending: false });
 
-    if (agentId) {
-      query = query.eq("id", agentId);
-    }
+    if (agentId) query = query.eq("id", agentId);
+    if (role) query = query.eq("role", role);
+    if (active === "true") query = query.eq("is_active", true);
+    if (active === "false") query = query.eq("is_active", false);
 
-    if (active === "true") {
-      query = query.eq("is_active", true);
-    }
+    if (q) {
+      const search = q.replace(/[%_,]/g, "").trim();
 
-    if (active === "false") {
-      query = query.eq("is_active", false);
+      if (search) {
+        query = query.or(
+          `name.ilike.%${search}%,role.ilike.%${search}%,opening_message.ilike.%${search}%,instructions.ilike.%${search}%`
+        );
+      }
     }
 
     const { data, error } = await query;
 
     if (error) throw error;
 
-    const agents = Array.isArray(data)
-      ? data.map((agent) => cleanAgent(agent))
-      : [];
-
     return NextResponse.json({
       success: true,
-      agents,
+      agents: Array.isArray(data) ? data.map(cleanAgent) : [],
     });
   } catch (error) {
-    console.error(error);
+    console.error("AI agents GET error:", error);
 
     return NextResponse.json(
       {
         success: false,
         error: getErrorMessage(error, "Unable to load AI agents."),
       },
-      {
-        status: 500,
-      }
+      { status: 500 }
     );
   }
 }
@@ -209,25 +249,18 @@ export async function POST(request: NextRequest) {
     const businessId = getBusinessId(body);
     const role = normalizeRole(body.role);
     const tone = normalizeTone(body.tone);
-    const name = normalizeString(body.name) || "CreatorOS AI Agent";
-
+    const name = cleanString(body.name) || "CreatorOS AI Employee";
     const openingMessage =
       getOpeningMessage(body) || getDefaultOpeningMessage(role);
-
     const instructions =
-      normalizeString(body.instructions) || getDefaultInstructions(role, tone);
-
-    const knowledge = normalizeString(body.knowledge);
+      cleanString(body.instructions) || getDefaultInstructions(role, tone);
+    const knowledge = cleanString(body.knowledge);
+    const isActive = normalizeActive(body);
 
     if (!businessId) {
       return NextResponse.json(
-        {
-          success: false,
-          error: "businessId is required.",
-        },
-        {
-          status: 400,
-        }
+        { success: false, error: "businessId is required." },
+        { status: 400 }
       );
     }
 
@@ -242,34 +275,45 @@ export async function POST(request: NextRequest) {
         instructions,
         knowledge: knowledge || null,
         avatar_url: body.avatar_url ?? null,
-        is_active: body.is_active ?? true,
-        metadata: body.metadata ?? {},
+        is_active: isActive,
+        metadata: {
+          ...(body.metadata ?? {}),
+          createdFrom: "ai_agents_api",
+          createdAt: new Date().toISOString(),
+        },
       })
       .select()
       .single();
 
     if (error) throw error;
 
+    await trackAgentEvent({
+      businessId,
+      event: "ai_agent_created",
+      agentId: data.id,
+      metadata: {
+        role,
+        tone,
+        isActive,
+      },
+    });
+
     return NextResponse.json(
       {
         success: true,
         agent: cleanAgent(data),
       },
-      {
-        status: 201,
-      }
+      { status: 201 }
     );
   } catch (error) {
-    console.error(error);
+    console.error("AI agents POST error:", error);
 
     return NextResponse.json(
       {
         success: false,
         error: getErrorMessage(error, "Unable to create AI agent."),
       },
-      {
-        status: 500,
-      }
+      { status: 500 }
     );
   }
 }
@@ -278,17 +322,12 @@ export async function PATCH(request: NextRequest) {
   try {
     const body = (await request.json()) as AgentBody;
 
-    const id = normalizeString(body.id);
+    const id = cleanString(body.id);
 
     if (!id) {
       return NextResponse.json(
-        {
-          success: false,
-          error: "Agent ID is required.",
-        },
-        {
-          status: 400,
-        }
+        { success: false, error: "Agent ID is required." },
+        { status: 400 }
       );
     }
 
@@ -299,41 +338,34 @@ export async function PATCH(request: NextRequest) {
     }
 
     if (body.name !== undefined) {
-      const name = normalizeString(body.name);
+      const name = cleanString(body.name);
 
       if (!name) {
         return NextResponse.json(
-          {
-            success: false,
-            error: "Agent name cannot be empty.",
-          },
-          {
-            status: 400,
-          }
+          { success: false, error: "Agent name cannot be empty." },
+          { status: 400 }
         );
       }
 
       updates.name = name;
     }
 
-    if (body.role !== undefined) {
-      updates.role = normalizeRole(body.role);
-    }
+    if (body.role !== undefined) updates.role = normalizeRole(body.role);
+    if (body.tone !== undefined) updates.tone = normalizeTone(body.tone);
 
-    if (body.tone !== undefined) {
-      updates.tone = normalizeTone(body.tone);
-    }
-
-    if (body.openingMessage !== undefined || body.opening_message !== undefined) {
+    if (
+      body.openingMessage !== undefined ||
+      body.opening_message !== undefined
+    ) {
       updates.opening_message = getOpeningMessage(body);
     }
 
     if (body.instructions !== undefined) {
-      updates.instructions = normalizeString(body.instructions);
+      updates.instructions = cleanString(body.instructions);
     }
 
     if (body.knowledge !== undefined) {
-      const knowledge = normalizeString(body.knowledge);
+      const knowledge = cleanString(body.knowledge);
       updates.knowledge = knowledge || null;
     }
 
@@ -341,8 +373,8 @@ export async function PATCH(request: NextRequest) {
       updates.avatar_url = body.avatar_url;
     }
 
-    if (body.is_active !== undefined) {
-      updates.is_active = Boolean(body.is_active);
+    if (body.isActive !== undefined || body.is_active !== undefined) {
+      updates.is_active = normalizeActive(body);
     }
 
     if (body.metadata !== undefined) {
@@ -351,13 +383,8 @@ export async function PATCH(request: NextRequest) {
 
     if (Object.keys(updates).length === 0) {
       return NextResponse.json(
-        {
-          success: false,
-          error: "No agent updates provided.",
-        },
-        {
-          status: 400,
-        }
+        { success: false, error: "No agent updates provided." },
+        { status: 400 }
       );
     }
 
@@ -370,21 +397,30 @@ export async function PATCH(request: NextRequest) {
 
     if (error) throw error;
 
+    await trackAgentEvent({
+      businessId: String(data.business_id),
+      event: "ai_agent_updated",
+      agentId: data.id,
+      metadata: {
+        updatedFields: Object.keys(updates),
+        role: data.role,
+        isActive: data.is_active,
+      },
+    });
+
     return NextResponse.json({
       success: true,
       agent: cleanAgent(data),
     });
   } catch (error) {
-    console.error(error);
+    console.error("AI agents PATCH error:", error);
 
     return NextResponse.json(
       {
         success: false,
         error: getErrorMessage(error, "Unable to update AI agent."),
       },
-      {
-        status: 500,
-      }
+      { status: 500 }
     );
   }
 }
@@ -397,35 +433,51 @@ export async function DELETE(request: NextRequest) {
 
     if (!id) {
       return NextResponse.json(
-        {
-          success: false,
-          error: "Agent ID is required.",
-        },
-        {
-          status: 400,
-        }
+        { success: false, error: "Agent ID is required." },
+        { status: 400 }
       );
     }
 
-    const { error } = await supabaseAdmin.from("ai_agents").delete().eq("id", id);
+    const { data: agent, error: loadError } = await supabaseAdmin
+      .from("ai_agents")
+      .select("id, business_id, role, is_active")
+      .eq("id", id)
+      .maybeSingle();
+
+    if (loadError) throw loadError;
+
+    const { error } = await supabaseAdmin
+      .from("ai_agents")
+      .delete()
+      .eq("id", id);
 
     if (error) throw error;
+
+    if (agent?.business_id) {
+      await trackAgentEvent({
+        businessId: agent.business_id,
+        event: "ai_agent_deleted",
+        agentId: id,
+        metadata: {
+          role: agent.role,
+          isActive: agent.is_active,
+        },
+      });
+    }
 
     return NextResponse.json({
       success: true,
       deletedId: id,
     });
   } catch (error) {
-    console.error(error);
+    console.error("AI agents DELETE error:", error);
 
     return NextResponse.json(
       {
         success: false,
         error: getErrorMessage(error, "Unable to delete AI agent."),
       },
-      {
-        status: 500,
-      }
+      { status: 500 }
     );
   }
 }

@@ -17,30 +17,48 @@ import { supabaseAdmin } from "@/lib/supabase-admin";
 export const dynamic = "force-dynamic";
 
 type Props = {
-  params: Promise<{
-    id: string;
-  }>;
+  params: Promise<{ id: string }>;
 };
 
 type BusinessRow = {
   id: string;
   name: string;
-  slug: string;
+  slug: string | null;
   description: string | null;
   industry: string | null;
   audience: string | null;
 };
 
-async function loadBusiness(id: string) {
-  const { data, error } = await supabaseAdmin
-    .from("businesses")
-    .select("id, name, slug, description, industry, audience")
-    .eq("id", id)
-    .single();
+async function loadMarketingPage(id: string) {
+  const [businessResult, generationsResult, eventsResult] = await Promise.all([
+    supabaseAdmin
+      .from("businesses")
+      .select("id, name, slug, description, industry, audience")
+      .eq("id", id)
+      .single(),
 
-  if (error || !data) return null;
+    supabaseAdmin
+      .from("ai_generations")
+      .select("id", { count: "exact", head: true })
+      .eq("business_id", id)
+      .eq("module", "marketing"),
 
-  return data as BusinessRow;
+    supabaseAdmin
+      .from("analytics_events")
+      .select("id", { count: "exact", head: true })
+      .eq("business_id", id)
+      .eq("source", "marketing"),
+  ]);
+
+  if (businessResult.error || !businessResult.data) return null;
+  if (generationsResult.error) throw generationsResult.error;
+  if (eventsResult.error) throw eventsResult.error;
+
+  return {
+    business: businessResult.data as BusinessRow,
+    generatedAssets: generationsResult.count ?? 0,
+    campaigns: eventsResult.count ?? 0,
+  };
 }
 
 const marketingTools = [
@@ -78,75 +96,94 @@ const marketingTools = [
 
 export default async function MarketingPage({ params }: Props) {
   const { id } = await params;
-  const business = await loadBusiness(id);
+  const data = await loadMarketingPage(id);
 
-  if (!business) {
-    notFound();
-  }
+  if (!data) notFound();
+
+  const { business, generatedAssets, campaigns } = data;
 
   return (
-    <main className="min-h-screen bg-black text-white">
-      <section className="mx-auto max-w-7xl px-6 py-10">
+    <main className="min-h-screen bg-[#050505] text-white">
+      <section className="mx-auto flex w-full max-w-7xl flex-col gap-8 px-4 py-6 sm:px-6 lg:px-8">
         <Link
           href={`/dashboard/business/${business.id}`}
-          className="mb-8 inline-flex items-center gap-2 text-yellow-400 hover:text-yellow-300"
+          className="inline-flex w-fit items-center gap-2 text-sm text-zinc-400 transition hover:text-white"
         >
-          <ArrowLeft size={18} />
+          <ArrowLeft className="h-4 w-4" />
           Back to Business
         </Link>
 
-        <div className="rounded-3xl border border-yellow-400/20 bg-yellow-400/10 p-8">
-          <p className="text-sm uppercase tracking-[0.35em] text-yellow-400">
-            AI Marketing Center
-          </p>
+        <div className="overflow-hidden rounded-3xl border border-white/10 bg-white/[0.03] shadow-2xl shadow-black/30">
+          <div className="relative p-5 sm:p-8 lg:p-10">
+            <div className="absolute right-0 top-0 h-64 w-64 rounded-full bg-yellow-400/10 blur-3xl" />
+            <div className="absolute bottom-0 left-0 h-64 w-64 rounded-full bg-white/5 blur-3xl" />
 
-          <h1 className="mt-4 text-4xl font-bold md:text-6xl">
-            Market {business.name}
-          </h1>
+            <div className="relative z-10 flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
+              <div>
+                <div className="inline-flex items-center gap-2 rounded-full border border-yellow-400/20 bg-yellow-400/10 px-3 py-1 text-xs font-bold uppercase tracking-wide text-yellow-200">
+                  <Megaphone className="h-3.5 w-3.5" />
+                  AI Marketing Center
+                </div>
 
-          <p className="mt-5 max-w-3xl leading-7 text-zinc-300">
-            Generate campaigns, social posts, emails, blogs, ads, SEO content,
-            and launch plans for your creator business.
-          </p>
+                <h1 className="mt-5 text-3xl font-black tracking-tight sm:text-5xl lg:text-6xl">
+                  Market {business.name}
+                </h1>
 
-          <div className="mt-8 flex flex-wrap gap-3">
-            <button className="inline-flex items-center gap-2 rounded-2xl bg-yellow-400 px-6 py-3 font-bold text-black transition hover:bg-yellow-300">
-              <Sparkles size={18} />
-              Generate Campaign
-            </button>
+                <p className="mt-4 max-w-3xl text-sm leading-6 text-zinc-400 sm:text-base">
+                  Generate campaigns, social posts, emails, blogs, ads, SEO
+                  content, and launch plans for your creator business.
+                </p>
+              </div>
 
-            <button className="inline-flex items-center gap-2 rounded-2xl border border-white/10 px-6 py-3 font-bold text-white transition hover:border-yellow-400/50">
-              <CalendarDays size={18} />
-              Build 30-Day Calendar
-            </button>
+              <div className="flex flex-col gap-3 sm:flex-row">
+                <a
+                  href="#marketing-tools"
+                  className="inline-flex items-center justify-center gap-2 rounded-2xl bg-yellow-400 px-5 py-3 text-sm font-black text-black transition hover:bg-yellow-300"
+                >
+                  <Sparkles className="h-4 w-4" />
+                  Generate Campaign
+                </a>
+
+                <a
+                  href="#marketing-brief"
+                  className="inline-flex items-center justify-center gap-2 rounded-2xl border border-white/10 bg-black/40 px-5 py-3 text-sm font-bold text-white transition hover:border-yellow-400/40 hover:text-yellow-200"
+                >
+                  <CalendarDays className="h-4 w-4" />
+                  Build Calendar
+                </a>
+              </div>
+            </div>
           </div>
         </div>
 
-        <div className="mt-8 grid gap-5 md:grid-cols-3">
-          <div className="rounded-3xl border border-white/10 bg-white/[0.04] p-6">
-            <Megaphone className="mb-4 text-yellow-400" />
-            <p className="text-sm text-zinc-400">Campaigns</p>
-            <h2 className="mt-2 text-3xl font-bold">0</h2>
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
+            <Megaphone className="h-7 w-7 text-yellow-200" />
+            <p className="mt-4 text-xs text-zinc-500">Campaigns</p>
+            <h2 className="mt-2 text-3xl font-black">{campaigns}</h2>
           </div>
 
-          <div className="rounded-3xl border border-white/10 bg-white/[0.04] p-6">
-            <PenTool className="mb-4 text-yellow-400" />
-            <p className="text-sm text-zinc-400">Generated Assets</p>
-            <h2 className="mt-2 text-3xl font-bold">0</h2>
+          <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
+            <PenTool className="h-7 w-7 text-yellow-200" />
+            <p className="mt-4 text-xs text-zinc-500">Generated Assets</p>
+            <h2 className="mt-2 text-3xl font-black">{generatedAssets}</h2>
           </div>
 
-          <div className="rounded-3xl border border-white/10 bg-white/[0.04] p-6">
-            <BarChart3 className="mb-4 text-yellow-400" />
-            <p className="text-sm text-zinc-400">Marketing Score</p>
-            <h2 className="mt-2 text-3xl font-bold">New</h2>
+          <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
+            <BarChart3 className="h-7 w-7 text-yellow-200" />
+            <p className="mt-4 text-xs text-zinc-500">Marketing Score</p>
+            <h2 className="mt-2 text-3xl font-black">Ready</h2>
           </div>
         </div>
 
-        <div className="mt-8 grid gap-6 lg:grid-cols-3">
-          <div className="rounded-3xl border border-white/10 bg-white/[0.04] p-6 lg:col-span-2">
+        <div className="grid gap-6 lg:grid-cols-3">
+          <div
+            id="marketing-tools"
+            className="rounded-3xl border border-white/10 bg-white/[0.03] p-5 sm:p-6 lg:col-span-2"
+          >
             <div className="mb-6 flex items-center gap-3">
-              <Sparkles className="text-yellow-400" />
-              <h2 className="text-2xl font-bold">Marketing Tools</h2>
+              <Sparkles className="h-5 w-5 text-yellow-200" />
+              <h2 className="text-2xl font-black">Marketing Tools</h2>
             </div>
 
             <div className="grid gap-4 md:grid-cols-2">
@@ -156,13 +193,14 @@ export default async function MarketingPage({ params }: Props) {
                 return (
                   <button
                     key={tool.title}
-                    className="rounded-3xl border border-white/10 bg-black/40 p-5 text-left transition hover:border-yellow-400/50"
+                    type="button"
+                    className="rounded-3xl border border-white/10 bg-black/40 p-5 text-left transition hover:border-yellow-400/40 hover:bg-yellow-400/[0.03]"
                   >
-                    <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-yellow-400/10 text-yellow-400">
-                      <Icon size={22} />
+                    <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-yellow-400/10 text-yellow-200">
+                      <Icon className="h-5 w-5" />
                     </div>
 
-                    <h3 className="text-lg font-bold">{tool.title}</h3>
+                    <h3 className="text-lg font-black">{tool.title}</h3>
 
                     <p className="mt-2 text-sm leading-6 text-zinc-400">
                       {tool.description}
@@ -173,27 +211,34 @@ export default async function MarketingPage({ params }: Props) {
             </div>
           </div>
 
-          <div className="rounded-3xl border border-yellow-400/20 bg-yellow-400/10 p-6">
-            <h2 className="text-2xl font-bold">AI Marketing Brief</h2>
+          <div
+            id="marketing-brief"
+            className="rounded-3xl border border-yellow-400/20 bg-yellow-400/10 p-5 sm:p-6"
+          >
+            <h2 className="text-2xl font-black text-yellow-100">
+              AI Marketing Brief
+            </h2>
 
-            <div className="mt-5 space-y-4 text-sm leading-6 text-zinc-300">
+            <div className="mt-5 space-y-4 text-sm leading-6 text-yellow-100/75">
               <p>
-                <span className="font-bold text-yellow-400">Business:</span>{" "}
+                <span className="font-black text-yellow-200">Business:</span>{" "}
                 {business.name}
               </p>
 
               <p>
-                <span className="font-bold text-yellow-400">Industry:</span>{" "}
+                <span className="font-black text-yellow-200">Industry:</span>{" "}
                 {business.industry || "Not set"}
               </p>
 
               <p>
-                <span className="font-bold text-yellow-400">Audience:</span>{" "}
+                <span className="font-black text-yellow-200">Audience:</span>{" "}
                 {business.audience || "Not set"}
               </p>
 
               <p>
-                <span className="font-bold text-yellow-400">Description:</span>{" "}
+                <span className="font-black text-yellow-200">
+                  Description:
+                </span>{" "}
                 {business.description || "No description yet."}
               </p>
             </div>

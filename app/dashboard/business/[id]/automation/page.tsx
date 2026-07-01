@@ -10,9 +10,11 @@ import {
   ShoppingBag,
   Sparkles,
   Workflow,
+  Zap,
 } from "lucide-react";
 
 import { supabaseAdmin } from "@/lib/supabase-admin";
+import AutomationsClient from "./client";
 
 export const dynamic = "force-dynamic";
 
@@ -27,19 +29,39 @@ type BusinessRow = {
   name: string;
 };
 
-async function loadBusiness(id: string) {
-  const { data, error } = await supabaseAdmin
-    .from("businesses")
-    .select("id, name")
-    .eq("id", id)
-    .single();
+type AutomationRow = {
+  id: string;
+  business_id: string;
+  name: string | null;
+  trigger: string | null;
+  action: string | null;
+  status: string | null;
+  runs_count: number | null;
+  metadata: Record<string, unknown> | null;
+  created_at: string;
+};
 
-  if (error || !data) return null;
+async function loadAutomationPage(id: string) {
+  const [businessResult, automationsResult] = await Promise.all([
+    supabaseAdmin.from("businesses").select("id, name").eq("id", id).single(),
 
-  return data as BusinessRow;
+    supabaseAdmin
+      .from("automations")
+      .select("*")
+      .eq("business_id", id)
+      .order("created_at", { ascending: false }),
+  ]);
+
+  if (businessResult.error || !businessResult.data) return null;
+  if (automationsResult.error) throw automationsResult.error;
+
+  return {
+    business: businessResult.data as BusinessRow,
+    automations: (automationsResult.data ?? []) as AutomationRow[],
+  };
 }
 
-const workflows = [
+const workflowTemplates = [
   {
     title: "New Purchase Follow-Up",
     trigger: "Customer buys a product",
@@ -68,78 +90,132 @@ const workflows = [
 
 export default async function AutomationPage({ params }: Props) {
   const { id } = await params;
-  const business = await loadBusiness(id);
+  const data = await loadAutomationPage(id);
 
-  if (!business) {
-    notFound();
-  }
+  if (!data) notFound();
+
+  const { business, automations } = data;
+
+  const activeAutomations = automations.filter(
+    (automation) => automation.status === "active"
+  );
+
+  const pausedAutomations = automations.filter(
+    (automation) => automation.status === "paused"
+  );
+
+  const totalRuns = automations.reduce(
+    (sum, automation) => sum + Number(automation.runs_count ?? 0),
+    0
+  );
 
   return (
-    <main className="min-h-screen bg-black text-white">
-      <section className="mx-auto max-w-7xl px-6 py-10">
+    <main className="min-h-screen bg-[#050505] text-white">
+      <section className="mx-auto flex w-full max-w-7xl flex-col gap-8 px-4 py-6 sm:px-6 lg:px-8">
         <Link
           href={`/dashboard/business/${business.id}`}
-          className="mb-8 inline-flex items-center gap-2 text-yellow-400 hover:text-yellow-300"
+          className="inline-flex w-fit items-center gap-2 text-sm text-zinc-400 transition hover:text-white"
         >
-          <ArrowLeft size={18} />
+          <ArrowLeft className="h-4 w-4" />
           Back to Business
         </Link>
 
-        <div className="rounded-3xl border border-yellow-400/20 bg-yellow-400/10 p-8">
-          <p className="text-sm uppercase tracking-[0.35em] text-yellow-400">
-            AI Automation Builder
-          </p>
+        <div className="overflow-hidden rounded-3xl border border-white/10 bg-white/[0.03] shadow-2xl shadow-black/30">
+          <div className="relative p-5 sm:p-8 lg:p-10">
+            <div className="absolute right-0 top-0 h-64 w-64 rounded-full bg-yellow-400/10 blur-3xl" />
+            <div className="absolute bottom-0 left-0 h-64 w-64 rounded-full bg-white/5 blur-3xl" />
 
-          <h1 className="mt-4 text-4xl font-bold md:text-6xl">
-            Automate {business.name}
-          </h1>
+            <div className="relative z-10 flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
+              <div>
+                <div className="inline-flex items-center gap-2 rounded-full border border-yellow-400/20 bg-yellow-400/10 px-3 py-1 text-xs font-bold uppercase tracking-wide text-yellow-200">
+                  <Workflow className="h-3.5 w-3.5" />
+                  AI Automation Builder
+                </div>
 
-          <p className="mt-5 max-w-3xl leading-7 text-zinc-300">
-            Build workflows that connect purchases, emails, AI employees, CRM
-            updates, customer follow-ups, reviews, and upsells.
-          </p>
+                <h1 className="mt-5 text-3xl font-black tracking-tight sm:text-5xl lg:text-6xl">
+                  Automate {business.name}
+                </h1>
 
-          <div className="mt-8 flex flex-wrap gap-3">
-            <button className="inline-flex items-center gap-2 rounded-2xl bg-yellow-400 px-6 py-3 font-bold text-black transition hover:bg-yellow-300">
-              <Sparkles size={18} />
-              Create AI Workflow
-            </button>
+                <p className="mt-4 max-w-3xl text-sm leading-6 text-zinc-400 sm:text-base">
+                  Build workflows that connect purchases, emails, AI employees,
+                  CRM updates, customer follow-ups, reviews, and upsells.
+                </p>
+              </div>
 
-            <button className="inline-flex items-center gap-2 rounded-2xl border border-white/10 px-6 py-3 font-bold text-white transition hover:border-yellow-400/50">
-              <Workflow size={18} />
-              Browse Templates
-            </button>
+              <div className="flex flex-col gap-3 sm:flex-row">
+                <a
+                  href="#automation-manager"
+                  className="inline-flex items-center justify-center gap-2 rounded-2xl bg-yellow-400 px-5 py-3 text-sm font-black text-black transition hover:bg-yellow-300"
+                >
+                  <Sparkles className="h-4 w-4" />
+                  Create Workflow
+                </a>
+
+                <a
+                  href="#workflow-templates"
+                  className="inline-flex items-center justify-center gap-2 rounded-2xl border border-white/10 bg-black/40 px-5 py-3 text-sm font-bold text-white transition hover:border-yellow-400/40 hover:text-yellow-200"
+                >
+                  <Workflow className="h-4 w-4" />
+                  Browse Templates
+                </a>
+              </div>
+            </div>
           </div>
         </div>
 
-        <div className="mt-8 grid gap-5 md:grid-cols-3">
-          <div className="rounded-3xl border border-white/10 bg-white/[0.04] p-6">
-            <Workflow className="mb-4 text-yellow-400" />
-            <p className="text-sm text-zinc-400">Active Workflows</p>
-            <h2 className="mt-2 text-3xl font-bold">0</h2>
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
+            <Workflow className="h-7 w-7 text-yellow-200" />
+            <p className="mt-4 text-xs text-zinc-500">Total Workflows</p>
+            <h2 className="mt-2 text-3xl font-black">{automations.length}</h2>
           </div>
 
-          <div className="rounded-3xl border border-white/10 bg-white/[0.04] p-6">
-            <Repeat className="mb-4 text-yellow-400" />
-            <p className="text-sm text-zinc-400">Runs This Month</p>
-            <h2 className="mt-2 text-3xl font-bold">0</h2>
+          <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
+            <Zap className="h-7 w-7 text-yellow-200" />
+            <p className="mt-4 text-xs text-zinc-500">Active</p>
+            <h2 className="mt-2 text-3xl font-black">
+              {activeAutomations.length}
+            </h2>
           </div>
 
-          <div className="rounded-3xl border border-white/10 bg-white/[0.04] p-6">
-            <Settings className="mb-4 text-yellow-400" />
-            <p className="text-sm text-zinc-400">Automation Status</p>
-            <h2 className="mt-2 text-3xl font-bold">Ready</h2>
+          <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
+            <Repeat className="h-7 w-7 text-yellow-200" />
+            <p className="mt-4 text-xs text-zinc-500">Total Runs</p>
+            <h2 className="mt-2 text-3xl font-black">{totalRuns}</h2>
+          </div>
+
+          <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
+            <Settings className="h-7 w-7 text-yellow-200" />
+            <p className="mt-4 text-xs text-zinc-500">Paused</p>
+            <h2 className="mt-2 text-3xl font-black">
+              {pausedAutomations.length}
+            </h2>
           </div>
         </div>
 
-        <div className="mt-8 rounded-3xl border border-white/10 bg-white/[0.04] p-6">
+        <div id="automation-manager">
+          <AutomationsClient
+            businessId={business.id}
+            initialAutomations={automations}
+            templates={workflowTemplates.map((template) => ({
+              title: template.title,
+              trigger: template.trigger,
+              action: template.action,
+            }))}
+          />
+        </div>
+
+        <div
+          id="workflow-templates"
+          className="rounded-3xl border border-white/10 bg-white/[0.03] p-5 sm:p-6"
+        >
           <div className="mb-6 flex items-center gap-3">
-            <Sparkles className="text-yellow-400" />
-            <h2 className="text-2xl font-bold">Workflow Templates</h2>
+            <Sparkles className="h-5 w-5 text-yellow-200" />
+            <h2 className="text-2xl font-black">Workflow Templates</h2>
           </div>
 
           <div className="grid gap-5 md:grid-cols-2">
-            {workflows.map((workflow) => {
+            {workflowTemplates.map((workflow) => {
               const Icon = workflow.icon;
 
               return (
@@ -147,31 +223,27 @@ export default async function AutomationPage({ params }: Props) {
                   key={workflow.title}
                   className="rounded-3xl border border-white/10 bg-black/40 p-6"
                 >
-                  <div className="mb-5 flex h-12 w-12 items-center justify-center rounded-2xl bg-yellow-400/10 text-yellow-400">
-                    <Icon size={22} />
+                  <div className="mb-5 flex h-12 w-12 items-center justify-center rounded-2xl bg-yellow-400/10 text-yellow-200">
+                    <Icon className="h-5 w-5" />
                   </div>
 
-                  <h3 className="text-xl font-bold">{workflow.title}</h3>
+                  <h3 className="text-xl font-black">{workflow.title}</h3>
 
                   <div className="mt-4 space-y-3 text-sm leading-6 text-zinc-300">
                     <p>
-                      <span className="font-bold text-yellow-400">
+                      <span className="font-black text-yellow-200">
                         Trigger:
                       </span>{" "}
                       {workflow.trigger}
                     </p>
 
                     <p>
-                      <span className="font-bold text-yellow-400">
+                      <span className="font-black text-yellow-200">
                         Action:
                       </span>{" "}
                       {workflow.action}
                     </p>
                   </div>
-
-                  <button className="mt-6 w-full rounded-2xl border border-yellow-400/40 px-5 py-3 font-bold text-yellow-400 transition hover:bg-yellow-400/10">
-                    Use Template
-                  </button>
                 </div>
               );
             })}

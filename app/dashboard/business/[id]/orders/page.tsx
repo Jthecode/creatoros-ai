@@ -26,20 +26,69 @@ type Props = {
 type BusinessRow = {
   id: string;
   name: string;
-  slug: string;
+  slug: string | null;
 };
 
 type OrderRow = {
   id: string;
   business_id: string;
   customer_email: string | null;
-  total_cents: number | null;
+  product_name?: string | null;
+  quantity?: number | null;
+  total: number;
+  total_cents?: number | null;
   currency: string | null;
+  payment_status: string | null;
+  fulfillment_status: string | null;
   status: string | null;
+  metadata?: Record<string, unknown> | null;
   created_at: string;
 };
 
-function formatCurrency(cents: number | null, currency = "USD") {
+function normalizeOrder(order: Record<string, unknown>): OrderRow {
+  const totalCents =
+    typeof order.total_cents === "number"
+      ? order.total_cents
+      : typeof order.total === "number"
+        ? Math.round(order.total * 100)
+        : 0;
+
+  const paymentStatus =
+    typeof order.payment_status === "string"
+      ? order.payment_status
+      : typeof order.status === "string"
+        ? order.status
+        : "pending";
+
+  return {
+    id: String(order.id),
+    business_id: String(order.business_id),
+    customer_email:
+      typeof order.customer_email === "string" ? order.customer_email : null,
+    product_name:
+      typeof order.product_name === "string" ? order.product_name : null,
+    quantity: typeof order.quantity === "number" ? order.quantity : null,
+    total: typeof order.total === "number" ? order.total : totalCents / 100,
+    total_cents: totalCents,
+    currency: typeof order.currency === "string" ? order.currency : "USD",
+    payment_status: paymentStatus,
+    fulfillment_status:
+      typeof order.fulfillment_status === "string"
+        ? order.fulfillment_status
+        : "unfulfilled",
+    status: paymentStatus,
+    metadata:
+      typeof order.metadata === "object" && order.metadata !== null
+        ? (order.metadata as Record<string, unknown>)
+        : null,
+    created_at:
+      typeof order.created_at === "string"
+        ? order.created_at
+        : new Date().toISOString(),
+  };
+}
+
+function formatCurrency(cents: number | null | undefined, currency = "USD") {
   return new Intl.NumberFormat("en-US", {
     style: "currency",
     currency,
@@ -56,21 +105,33 @@ function formatDate(date: string) {
 }
 
 function getStatusStyles(status: string | null) {
-  if (status === "paid") {
-    return "border-green-500/20 bg-green-500/10 text-green-300";
+  if (status === "paid" || status === "completed" || status === "succeeded") {
+    return "border-emerald-400/20 bg-emerald-400/10 text-emerald-300";
   }
 
-  if (status === "refunded" || status === "cancelled") {
-    return "border-red-500/20 bg-red-500/10 text-red-300";
+  if (status === "refunded" || status === "cancelled" || status === "failed") {
+    return "border-red-400/20 bg-red-400/10 text-red-300";
   }
 
-  return "border-yellow-500/20 bg-yellow-500/10 text-yellow-300";
+  return "border-yellow-400/20 bg-yellow-400/10 text-yellow-200";
 }
 
 function getStatusIcon(status: string | null) {
-  if (status === "paid") return CheckCircle2;
-  if (status === "refunded" || status === "cancelled") return XCircle;
+  if (status === "paid" || status === "completed" || status === "succeeded") {
+    return CheckCircle2;
+  }
+
+  if (status === "refunded" || status === "cancelled" || status === "failed") {
+    return XCircle;
+  }
+
   return Clock;
+}
+
+function isPaidOrder(order: OrderRow) {
+  const status = order.payment_status || order.status;
+
+  return status === "paid" || status === "completed" || status === "succeeded";
 }
 
 async function loadOrders(id: string) {
@@ -83,7 +144,7 @@ async function loadOrders(id: string) {
 
     supabaseAdmin
       .from("orders")
-      .select("id, business_id, customer_email, total_cents, currency, status, created_at")
+      .select("*")
       .eq("business_id", id)
       .order("created_at", { ascending: false }),
   ]);
@@ -98,7 +159,9 @@ async function loadOrders(id: string) {
 
   return {
     business: businessResult.data as BusinessRow,
-    orders: (ordersResult.data ?? []) as OrderRow[],
+    orders: ((ordersResult.data ?? []) as Record<string, unknown>[]).map(
+      normalizeOrder
+    ),
   };
 }
 
@@ -112,8 +175,17 @@ export default async function OrdersPage({ params }: Props) {
 
   const { business, orders } = data;
 
-  const paidOrders = orders.filter((order) => order.status === "paid");
-  const pendingOrders = orders.filter((order) => order.status !== "paid");
+  const paidOrders = orders.filter(isPaidOrder);
+
+  const pendingOrders = orders.filter((order) => {
+    const status = order.payment_status || order.status;
+    return status === "pending" || status === "open" || status === "unpaid";
+  });
+
+  const failedOrders = orders.filter((order) => {
+    const status = order.payment_status || order.status;
+    return status === "failed" || status === "cancelled" || status === "refunded";
+  });
 
   const grossRevenue = paidOrders.reduce(
     (sum, order) => sum + Number(order.total_cents ?? 0),
@@ -151,95 +223,108 @@ export default async function OrdersPage({ params }: Props) {
   ];
 
   return (
-    <main className="min-h-screen bg-black text-white">
-      <section className="mx-auto max-w-7xl px-6 py-10">
+    <main className="min-h-screen bg-[#050505] text-white">
+      <section className="mx-auto flex w-full max-w-7xl flex-col gap-8 px-4 py-6 sm:px-6 lg:px-8">
         <Link
           href={`/dashboard/business/${business.id}`}
-          className="mb-8 inline-flex items-center gap-2 text-yellow-400 hover:text-yellow-300"
+          className="inline-flex w-fit items-center gap-2 text-sm text-zinc-400 transition hover:text-white"
         >
-          <ArrowLeft size={18} />
+          <ArrowLeft className="h-4 w-4" />
           Back to Business
         </Link>
 
-        <div className="rounded-3xl border border-yellow-400/20 bg-yellow-400/10 p-8">
-          <p className="text-sm uppercase tracking-[0.35em] text-yellow-400">
-            Orders Dashboard
-          </p>
+        <div className="overflow-hidden rounded-3xl border border-white/10 bg-white/[0.03] shadow-2xl shadow-black/30">
+          <div className="relative p-5 sm:p-8 lg:p-10">
+            <div className="absolute right-0 top-0 h-64 w-64 rounded-full bg-yellow-400/10 blur-3xl" />
+            <div className="absolute bottom-0 left-0 h-64 w-64 rounded-full bg-white/5 blur-3xl" />
 
-          <h1 className="mt-4 text-4xl font-bold md:text-6xl">
-            Orders for {business.name}
-          </h1>
+            <div className="relative z-10 flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
+              <div>
+                <div className="inline-flex items-center gap-2 rounded-full border border-yellow-400/20 bg-yellow-400/10 px-3 py-1 text-xs font-bold uppercase tracking-wide text-yellow-200">
+                  <Receipt className="h-3.5 w-3.5" />
+                  Orders Dashboard
+                </div>
 
-          <p className="mt-5 max-w-3xl leading-7 text-zinc-300">
-            Track Stripe purchases, customer emails, payment status, revenue,
-            and order activity for this CreatorOS AI business.
-          </p>
+                <h1 className="mt-5 text-3xl font-black tracking-tight sm:text-5xl lg:text-6xl">
+                  Orders for {business.name}
+                </h1>
 
-          <div className="mt-8 flex flex-wrap gap-3">
-            <Link
-              href={`/storefront/${business.slug}`}
-              className="inline-flex items-center gap-2 rounded-2xl bg-yellow-400 px-6 py-3 font-bold text-black transition hover:bg-yellow-300"
-            >
-              View Storefront
-            </Link>
+                <p className="mt-4 max-w-3xl text-sm leading-6 text-zinc-400 sm:text-base">
+                  Track Stripe purchases, customer emails, payment status,
+                  fulfillment status, revenue, and order activity.
+                </p>
+              </div>
 
-            <Link
-              href={`/dashboard/business/${business.id}/finance`}
-              className="inline-flex items-center gap-2 rounded-2xl border border-white/10 px-6 py-3 font-bold text-white transition hover:border-yellow-400/50"
-            >
-              Finance Center
-            </Link>
+              <div className="flex flex-col gap-3 sm:flex-row">
+                {business.slug ? (
+                  <Link
+                    href={`/storefront/${business.slug}`}
+                    className="inline-flex items-center justify-center gap-2 rounded-2xl bg-yellow-400 px-5 py-3 text-sm font-black text-black transition hover:bg-yellow-300"
+                  >
+                    View Storefront
+                    <ShoppingBag className="h-4 w-4" />
+                  </Link>
+                ) : null}
+
+                <Link
+                  href={`/dashboard/business/${business.id}/finance`}
+                  className="inline-flex items-center justify-center gap-2 rounded-2xl border border-white/10 bg-black/40 px-5 py-3 text-sm font-bold text-white transition hover:border-yellow-400/40 hover:text-yellow-200"
+                >
+                  Finance Center
+                </Link>
+              </div>
+            </div>
           </div>
         </div>
 
-        <div className="mt-8 grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           {statCards.map((card) => {
             const Icon = card.icon;
 
             return (
               <div
                 key={card.label}
-                className="rounded-3xl border border-white/10 bg-white/[0.04] p-6"
+                className="rounded-3xl border border-white/10 bg-white/[0.03] p-5"
               >
-                <div className="mb-5 flex h-12 w-12 items-center justify-center rounded-2xl bg-yellow-400/10 text-yellow-400">
-                  <Icon size={22} />
+                <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-yellow-400/10 text-yellow-200">
+                  <Icon className="h-5 w-5" />
                 </div>
 
-                <p className="text-sm text-zinc-400">{card.label}</p>
-                <h2 className="mt-2 text-3xl font-bold">{card.value}</h2>
+                <p className="text-xs text-zinc-500">{card.label}</p>
+                <h2 className="mt-2 text-3xl font-black">{card.value}</h2>
               </div>
             );
           })}
         </div>
 
-        <div className="mt-8 grid gap-5 md:grid-cols-3">
-          <div className="rounded-3xl border border-white/10 bg-white/[0.04] p-6">
-            <User className="mb-4 text-yellow-400" />
-            <p className="text-sm text-zinc-400">Customers</p>
-            <h2 className="mt-2 text-3xl font-bold">
+        <div className="grid gap-4 md:grid-cols-3">
+          <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
+            <User className="h-7 w-7 text-yellow-200" />
+            <p className="mt-4 text-xs text-zinc-500">Customers</p>
+            <h2 className="mt-2 text-3xl font-black">
               {uniqueCustomers.size}
             </h2>
           </div>
 
-          <div className="rounded-3xl border border-white/10 bg-white/[0.04] p-6">
-            <Clock className="mb-4 text-yellow-400" />
-            <p className="text-sm text-zinc-400">Pending / Other</p>
-            <h2 className="mt-2 text-3xl font-bold">
+          <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
+            <Clock className="h-7 w-7 text-yellow-200" />
+            <p className="mt-4 text-xs text-zinc-500">Pending Orders</p>
+            <h2 className="mt-2 text-3xl font-black">
               {pendingOrders.length}
             </h2>
           </div>
 
-          <div className="rounded-3xl border border-white/10 bg-white/[0.04] p-6">
-            <Receipt className="mb-4 text-yellow-400" />
-            <p className="text-sm text-zinc-400">Order System</p>
-            <h2 className="mt-2 text-3xl font-bold">Live</h2>
+          <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
+            <XCircle className="h-7 w-7 text-yellow-200" />
+            <p className="mt-4 text-xs text-zinc-500">Failed / Refunded</p>
+            <h2 className="mt-2 text-3xl font-black">{failedOrders.length}</h2>
           </div>
         </div>
 
-        <div className="mt-8 rounded-3xl border border-white/10 bg-white/[0.04] p-6">
+        <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5 sm:p-6">
           <div className="mb-6 flex flex-col justify-between gap-4 md:flex-row md:items-center">
             <div>
-              <h2 className="text-2xl font-bold">Recent Orders</h2>
+              <h2 className="text-2xl font-black">Recent Orders</h2>
               <p className="mt-2 text-sm text-zinc-400">
                 Orders are created automatically when Stripe checkout is
                 completed.
@@ -247,47 +332,53 @@ export default async function OrdersPage({ params }: Props) {
             </div>
 
             <div className="flex items-center gap-3 rounded-2xl border border-white/10 bg-black/40 px-4 py-3 text-zinc-500">
-              <Search size={18} />
-              <span className="text-sm">Search coming soon...</span>
+              <Search className="h-4 w-4" />
+              <span className="text-sm">
+                Step 4 adds search and status controls
+              </span>
             </div>
           </div>
 
           {orders.length === 0 ? (
-            <div className="rounded-3xl border border-white/10 bg-black/40 p-10 text-center">
-              <ShoppingBag size={56} className="mx-auto text-yellow-400" />
+            <div className="rounded-3xl border border-dashed border-white/10 bg-black/40 p-10 text-center">
+              <ShoppingBag className="mx-auto h-14 w-14 text-yellow-200" />
 
-              <h3 className="mt-5 text-2xl font-bold">No orders yet</h3>
+              <h3 className="mt-5 text-2xl font-black">No orders yet</h3>
 
               <p className="mx-auto mt-3 max-w-xl text-sm leading-6 text-zinc-400">
                 Once customers buy from your storefront, completed Stripe
                 payments will appear here automatically.
               </p>
 
-              <Link
-                href={`/storefront/${business.slug}`}
-                className="mt-6 inline-flex rounded-2xl bg-yellow-400 px-6 py-3 font-bold text-black transition hover:bg-yellow-300"
-              >
-                Preview Storefront
-              </Link>
+              {business.slug ? (
+                <Link
+                  href={`/storefront/${business.slug}`}
+                  className="mt-6 inline-flex rounded-2xl bg-yellow-400 px-6 py-3 text-sm font-black text-black transition hover:bg-yellow-300"
+                >
+                  Preview Storefront
+                </Link>
+              ) : null}
             </div>
           ) : (
             <div className="overflow-hidden rounded-3xl border border-white/10">
-              <div className="hidden grid-cols-5 border-b border-white/10 bg-black/60 px-5 py-4 text-sm font-semibold text-zinc-400 md:grid">
+              <div className="hidden grid-cols-6 border-b border-white/10 bg-black/60 px-5 py-4 text-sm font-bold text-zinc-400 lg:grid">
                 <span>Customer</span>
+                <span>Product</span>
                 <span>Status</span>
+                <span>Fulfillment</span>
                 <span>Amount</span>
-                <span>Date</span>
                 <span className="text-right">Actions</span>
               </div>
 
               <div className="divide-y divide-white/10">
                 {orders.map((order) => {
-                  const StatusIcon = getStatusIcon(order.status);
+                  const status = order.payment_status || order.status;
+                  const StatusIcon = getStatusIcon(status);
 
                   return (
                     <div
                       key={order.id}
-                      className="grid gap-4 bg-black/30 p-5 md:grid-cols-5 md:items-center"
+                      className="grid gap-4 bg-black/30 p-5 lg:grid-cols-6 lg:items-center"
                     >
                       <div>
                         <p className="font-bold">
@@ -295,46 +386,49 @@ export default async function OrdersPage({ params }: Props) {
                         </p>
 
                         <p className="mt-1 text-xs text-zinc-500">
-                          Order #{order.id.slice(0, 8)}
+                          Order #{order.id.slice(0, 8)} ·{" "}
+                          {formatDate(order.created_at)}
                         </p>
                       </div>
 
-                      <div>
-                        <span
-                          className={`inline-flex w-fit items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold capitalize ${getStatusStyles(
-                            order.status
-                          )}`}
-                        >
-                          <StatusIcon size={14} />
-                          {order.status || "pending"}
-                        </span>
-                      </div>
+                      <p className="text-sm text-zinc-300">
+                        {order.product_name || "CreatorOS Product"}
+                      </p>
 
-                      <p className="text-lg font-bold text-yellow-400">
+                      <span
+                        className={`inline-flex w-fit items-center gap-2 rounded-full border px-3 py-1 text-xs font-bold capitalize ${getStatusStyles(
+                          status
+                        )}`}
+                      >
+                        <StatusIcon className="h-3.5 w-3.5" />
+                        {status || "pending"}
+                      </span>
+
+                      <span className="w-fit rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-xs font-bold capitalize text-zinc-300">
+                        {order.fulfillment_status || "unfulfilled"}
+                      </span>
+
+                      <p className="text-lg font-black text-yellow-300">
                         {formatCurrency(
                           order.total_cents,
                           order.currency ?? "USD"
                         )}
                       </p>
 
-                      <p className="text-sm text-zinc-400">
-                        {formatDate(order.created_at)}
-                      </p>
-
-                      <div className="flex justify-start gap-2 md:justify-end">
-                        {order.customer_email && (
+                      <div className="flex justify-start gap-2 lg:justify-end">
+                        {order.customer_email ? (
                           <a
                             href={`mailto:${order.customer_email}`}
-                            className="inline-flex items-center gap-2 rounded-xl border border-white/10 px-4 py-2 text-sm text-zinc-300 transition hover:border-yellow-400/50 hover:text-yellow-400"
+                            className="inline-flex items-center gap-2 rounded-xl border border-white/10 px-4 py-2 text-sm text-zinc-300 transition hover:border-yellow-400/50 hover:text-yellow-200"
                           >
-                            <Mail size={15} />
+                            <Mail className="h-4 w-4" />
                             Email
                           </a>
-                        )}
+                        ) : null}
 
                         <Link
                           href={`/dashboard/business/${business.id}/crm`}
-                          className="rounded-xl border border-white/10 px-4 py-2 text-sm text-zinc-300 transition hover:border-yellow-400/50 hover:text-yellow-400"
+                          className="rounded-xl border border-white/10 px-4 py-2 text-sm text-zinc-300 transition hover:border-yellow-400/50 hover:text-yellow-200"
                         >
                           CRM
                         </Link>

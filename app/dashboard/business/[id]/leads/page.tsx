@@ -5,19 +5,15 @@ import {
   Bot,
   BriefcaseBusiness,
   CheckCircle2,
-  Clock,
   Mail,
-  Phone,
-  Plus,
-  Search,
   Target,
   TrendingUp,
   UserPlus,
   Users,
-  XCircle,
 } from "lucide-react";
 
 import { supabaseAdmin } from "@/lib/supabase-admin";
+import LeadsClient from "./client";
 
 export const dynamic = "force-dynamic";
 
@@ -36,6 +32,7 @@ type BusinessRow = {
 type LeadRow = {
   id: string;
   business_id: string;
+  businessId?: string;
   name: string | null;
   email: string | null;
   phone: string | null;
@@ -56,6 +53,40 @@ type OrderRow = {
   payment_status?: string | null;
   status?: string | null;
 };
+
+function normalizeLead(lead: Record<string, unknown>): LeadRow {
+  return {
+    id: String(lead.id),
+    business_id: String(lead.business_id),
+    businessId: String(lead.business_id),
+    name:
+      typeof lead.name === "string"
+        ? lead.name
+        : typeof lead.full_name === "string"
+          ? lead.full_name
+          : null,
+    email: typeof lead.email === "string" ? lead.email : null,
+    phone: typeof lead.phone === "string" ? lead.phone : null,
+    company: typeof lead.company === "string" ? lead.company : null,
+    source: typeof lead.source === "string" ? lead.source : "manual",
+    status:
+      typeof lead.status === "string"
+        ? lead.status
+        : typeof lead.stage === "string"
+          ? lead.stage
+          : "new",
+    value: typeof lead.value === "number" ? lead.value : 0,
+    notes: typeof lead.notes === "string" ? lead.notes : null,
+    metadata:
+      typeof lead.metadata === "object" && lead.metadata !== null
+        ? (lead.metadata as Record<string, unknown>)
+        : null,
+    created_at:
+      typeof lead.created_at === "string"
+        ? lead.created_at
+        : new Date().toISOString(),
+  };
+}
 
 async function loadLeads(id: string) {
   const [businessResult, leadsResult, ordersResult] = await Promise.all([
@@ -83,17 +114,11 @@ async function loadLeads(id: string) {
 
   return {
     business: businessResult.data as BusinessRow,
-    leads: (leadsResult.data ?? []) as LeadRow[],
+    leads: ((leadsResult.data ?? []) as Record<string, unknown>[]).map(
+      normalizeLead
+    ),
     orders: (ordersResult.data ?? []) as OrderRow[],
   };
-}
-
-function formatDate(date: string) {
-  return new Intl.DateTimeFormat("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  }).format(new Date(date));
 }
 
 function formatCurrency(amount: number) {
@@ -114,28 +139,6 @@ function getLeadStatus(lead: LeadRow) {
   return lead.status || "new";
 }
 
-function getStatusStyles(status: string | null) {
-  if (status === "won") {
-    return "border-emerald-400/20 bg-emerald-400/10 text-emerald-300";
-  }
-
-  if (status === "lost") {
-    return "border-red-400/20 bg-red-400/10 text-red-300";
-  }
-
-  if (status === "qualified" || status === "proposal") {
-    return "border-yellow-400/20 bg-yellow-400/10 text-yellow-200";
-  }
-
-  return "border-white/10 bg-white/[0.04] text-zinc-300";
-}
-
-function getStatusIcon(status: string | null) {
-  if (status === "won") return CheckCircle2;
-  if (status === "lost") return XCircle;
-  return Clock;
-}
-
 export default async function LeadsPage({ params }: Props) {
   const { id } = await params;
   const data = await loadLeads(id);
@@ -154,7 +157,6 @@ export default async function LeadsPage({ params }: Props) {
     (lead) => getLeadStatus(lead) === "proposal"
   );
   const wonLeads = leads.filter((lead) => getLeadStatus(lead) === "won");
-  const lostLeads = leads.filter((lead) => getLeadStatus(lead) === "lost");
 
   const paidOrders = orders.filter((order) => {
     const status = order.payment_status || order.status;
@@ -253,18 +255,18 @@ export default async function LeadsPage({ params }: Props) {
                 </h1>
 
                 <p className="mt-4 max-w-3xl text-sm leading-6 text-zinc-400 sm:text-base">
-                  Manage leads, sales status, sources, contact details,
-                  follow-ups, pipeline value, and AI-powered CRM actions.
+                  Create, edit, search, update, and manage the full sales
+                  pipeline for this CreatorOS AI business.
                 </p>
               </div>
 
               <div className="flex flex-col gap-3 sm:flex-row">
                 <a
-                  href="#lead-database"
+                  href="#lead-manager"
                   className="inline-flex items-center justify-center gap-2 rounded-2xl bg-yellow-400 px-5 py-3 text-sm font-black text-black transition hover:bg-yellow-300"
                 >
-                  <Plus className="h-4 w-4" />
-                  Manage Leads
+                  <UserPlus className="h-4 w-4" />
+                  New Lead
                 </a>
 
                 <Link
@@ -358,139 +360,8 @@ export default async function LeadsPage({ params }: Props) {
           </div>
         </div>
 
-        <div
-          id="lead-database"
-          className="rounded-3xl border border-white/10 bg-white/[0.03] p-5 sm:p-6"
-        >
-          <div className="mb-6 flex flex-col justify-between gap-4 md:flex-row md:items-center">
-            <div>
-              <h2 className="text-2xl font-black">Lead Database</h2>
-              <p className="mt-2 text-sm text-zinc-400">
-                Leads captured from storefronts, forms, campaigns, AI chats, and
-                manual entry appear here.
-              </p>
-            </div>
-
-            <div className="flex items-center gap-3 rounded-2xl border border-white/10 bg-black/40 px-4 py-3 text-zinc-500">
-              <Search className="h-4 w-4" />
-              <span className="text-sm">
-                Step 10 adds search, create, edit, and status updates
-              </span>
-            </div>
-          </div>
-
-          {leads.length === 0 ? (
-            <div className="rounded-3xl border border-dashed border-white/10 bg-black/40 p-10 text-center">
-              <Users className="mx-auto h-14 w-14 text-yellow-200" />
-
-              <h3 className="mt-5 text-2xl font-black">No leads yet</h3>
-
-              <p className="mx-auto mt-3 max-w-xl text-sm leading-6 text-zinc-400">
-                Leads will appear here when someone fills out a form, talks to
-                an AI employee, requests information, or is added manually.
-              </p>
-            </div>
-          ) : (
-            <div className="overflow-hidden rounded-3xl border border-white/10">
-              <div className="hidden grid-cols-7 border-b border-white/10 bg-black/60 px-5 py-4 text-sm font-bold text-zinc-400 lg:grid">
-                <span>Name</span>
-                <span>Email</span>
-                <span>Phone</span>
-                <span>Company</span>
-                <span>Source</span>
-                <span>Status</span>
-                <span className="text-right">Actions</span>
-              </div>
-
-              <div className="divide-y divide-white/10">
-                {leads.map((lead) => {
-                  const status = getLeadStatus(lead);
-                  const StatusIcon = getStatusIcon(status);
-
-                  return (
-                    <div
-                      key={lead.id}
-                      className="grid gap-4 bg-black/30 p-5 lg:grid-cols-7 lg:items-center"
-                    >
-                      <div>
-                        <p className="font-bold">{lead.name || "Unnamed lead"}</p>
-
-                        <p className="mt-1 text-xs text-zinc-500">
-                          Added {formatDate(lead.created_at)}
-                        </p>
-                      </div>
-
-                      <p className="text-sm text-zinc-300">
-                        {lead.email || "No email"}
-                      </p>
-
-                      <p className="text-sm text-zinc-300">
-                        {lead.phone || "No phone"}
-                      </p>
-
-                      <p className="text-sm text-zinc-300">
-                        {lead.company || "No company"}
-                      </p>
-
-                      <span className="w-fit rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-xs font-bold capitalize text-zinc-300">
-                        {lead.source || "website"}
-                      </span>
-
-                      <span
-                        className={`inline-flex w-fit items-center gap-2 rounded-full border px-3 py-1 text-xs font-bold capitalize ${getStatusStyles(
-                          status
-                        )}`}
-                      >
-                        <StatusIcon className="h-3.5 w-3.5" />
-                        {status}
-                      </span>
-
-                      <div className="flex flex-wrap justify-start gap-2 lg:justify-end">
-                        {lead.email ? (
-                          <a
-                            href={`mailto:${lead.email}`}
-                            className="inline-flex items-center gap-2 rounded-xl border border-white/10 px-4 py-2 text-sm text-zinc-300 transition hover:border-yellow-400/50 hover:text-yellow-200"
-                          >
-                            <Mail className="h-4 w-4" />
-                            Email
-                          </a>
-                        ) : null}
-
-                        {lead.phone ? (
-                          <a
-                            href={`tel:${lead.phone}`}
-                            className="inline-flex items-center gap-2 rounded-xl border border-white/10 px-4 py-2 text-sm text-zinc-300 transition hover:border-yellow-400/50 hover:text-yellow-200"
-                          >
-                            <Phone className="h-4 w-4" />
-                            Call
-                          </a>
-                        ) : null}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-        </div>
-
-        <div className="rounded-3xl border border-yellow-400/20 bg-yellow-400/10 p-5 sm:p-6">
-          <div className="flex items-start gap-4">
-            <div className="rounded-2xl bg-black/30 p-3 text-yellow-200">
-              <Bot className="h-5 w-5" />
-            </div>
-
-            <div>
-              <h2 className="text-xl font-black text-yellow-100">
-                AI Lead Engine Ready
-              </h2>
-              <p className="mt-2 text-sm leading-7 text-yellow-100/75">
-                Step 10 will add the interactive lead CRM client so you can
-                create leads, update statuses, search the pipeline, and manage
-                lead notes from this page.
-              </p>
-            </div>
-          </div>
+        <div id="lead-manager">
+          <LeadsClient businessId={business.id} initialLeads={leads} />
         </div>
       </section>
     </main>

@@ -3,81 +3,21 @@ import { supabaseAdmin } from "@/lib/supabase-admin";
 
 export const dynamic = "force-dynamic";
 
-type LeadStatus =
-  | "new"
-  | "contacted"
-  | "qualified"
-  | "proposal"
-  | "won"
-  | "lost";
+const BUCKET = "business-files";
 
-type LeadBody = {
+type FilePatchBody = {
   id?: string;
   businessId?: string;
   business_id?: string;
-  name?: string;
-  email?: string | null;
-  phone?: string | null;
-  company?: string | null;
-  source?: string | null;
-  status?: LeadStatus | string;
-  value?: number | string | null;
-  notes?: string | null;
+  name?: string | null;
+  folder?: string | null;
+  favorite?: boolean;
   metadata?: Record<string, unknown> | null;
 };
 
-function normalizeString(value: unknown) {
+function cleanString(value: unknown) {
   if (typeof value !== "string") return "";
   return value.trim();
-}
-
-function getBusinessId(body: LeadBody) {
-  return normalizeString(body.businessId || body.business_id);
-}
-
-function normalizeStatus(value: unknown): LeadStatus {
-  const status = normalizeString(value).toLowerCase();
-
-  if (
-    status === "new" ||
-    status === "contacted" ||
-    status === "qualified" ||
-    status === "proposal" ||
-    status === "won" ||
-    status === "lost"
-  ) {
-    return status;
-  }
-
-  return "new";
-}
-
-function normalizeValue(value: unknown) {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return Math.max(0, value);
-  }
-
-  if (typeof value === "string") {
-    const cleaned = value.replace(/[^0-9.]/g, "");
-    const parsed = Number.parseFloat(cleaned);
-
-    if (Number.isFinite(parsed)) {
-      return Math.max(0, parsed);
-    }
-  }
-
-  return 0;
-}
-
-function cleanSearchQuery(value: string) {
-  return value.replace(/[%_,]/g, "").trim();
-}
-
-function cleanLead(lead: Record<string, unknown>) {
-  return {
-    ...lead,
-    businessId: lead.business_id,
-  };
 }
 
 function getErrorMessage(error: unknown, fallback: string) {
@@ -85,23 +25,50 @@ function getErrorMessage(error: unknown, fallback: string) {
   return fallback;
 }
 
-async function trackLeadEvent(params: {
+function cleanSearch(value: string) {
+  return value.replace(/[%_,]/g, "").trim();
+}
+
+function getFolderFromType(file: File) {
+  const type = file.type.toLowerCase();
+  const name = file.name.toLowerCase();
+
+  if (type.startsWith("image/")) return "images";
+  if (type.startsWith("video/")) return "videos";
+  if (type.startsWith("audio/")) return "marketing";
+  if (name.includes("logo") || name.includes("brand")) return "brand-assets";
+  if (name.includes("contract") || name.includes("agreement")) return "legal";
+  if (name.includes("invoice") || name.includes("finance")) return "finance";
+  if (name.includes("product")) return "products";
+  if (name.includes("campaign") || name.includes("ad")) return "marketing";
+
+  return "documents";
+}
+
+function cleanFile(row: Record<string, unknown>) {
+  return {
+    ...row,
+    businessId: row.business_id,
+  };
+}
+
+async function trackFileEvent(params: {
   businessId: string;
   event: string;
-  leadId?: string;
+  fileId?: string;
   metadata?: Record<string, unknown>;
 }) {
   try {
     await supabaseAdmin.from("analytics_events").insert({
       business_id: params.businessId,
       event: params.event,
-      source: "leads",
-      lead_id: params.leadId ?? null,
+      source: "files",
+      file_id: params.fileId ?? null,
       revenue: 0,
       metadata: params.metadata ?? {},
     });
   } catch (error) {
-    console.error("Lead analytics tracking failed:", error);
+    console.error("File analytics tracking failed:", error);
   }
 }
 
@@ -110,9 +77,8 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
 
     const businessId = searchParams.get("businessId");
-    const leadId = searchParams.get("id");
-    const status = searchParams.get("status");
-    const source = searchParams.get("source");
+    const id = searchParams.get("id");
+    const folder = searchParams.get("folder");
     const q = searchParams.get("q");
 
     if (!businessId) {
@@ -123,21 +89,20 @@ export async function GET(request: NextRequest) {
     }
 
     let query = supabaseAdmin
-      .from("leads")
+      .from("business_files")
       .select("*")
       .eq("business_id", businessId)
       .order("created_at", { ascending: false });
 
-    if (leadId) query = query.eq("id", leadId);
-    if (status) query = query.eq("status", status);
-    if (source) query = query.eq("source", source);
+    if (id) query = query.eq("id", id);
+    if (folder) query = query.eq("folder", folder);
 
     if (q) {
-      const search = cleanSearchQuery(q);
+      const search = cleanSearch(q);
 
       if (search) {
         query = query.or(
-          `name.ilike.%${search}%,email.ilike.%${search}%,phone.ilike.%${search}%,company.ilike.%${search}%`
+          `name.ilike.%${search}%,file_name.ilike.%${search}%,folder.ilike.%${search}%,file_type.ilike.%${search}%`
         );
       }
     }
@@ -148,15 +113,15 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({
       success: true,
-      leads: Array.isArray(data) ? data.map(cleanLead) : [],
+      files: Array.isArray(data) ? data.map(cleanFile) : [],
     });
   } catch (error) {
-    console.error(error);
+    console.error("Files GET error:", error);
 
     return NextResponse.json(
       {
         success: false,
-        error: getErrorMessage(error, "Unable to load leads."),
+        error: getErrorMessage(error, "Unable to load files."),
       },
       { status: 500 }
     );
@@ -165,17 +130,14 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
-    const body = (await request.json()) as LeadBody;
+    const formData = await request.formData();
 
-    const businessId = getBusinessId(body);
-    const name = normalizeString(body.name);
-    const email = normalizeString(body.email);
-    const phone = normalizeString(body.phone);
-    const company = normalizeString(body.company);
-    const source = normalizeString(body.source) || "manual";
-    const status = normalizeStatus(body.status);
-    const notes = normalizeString(body.notes);
-    const value = normalizeValue(body.value);
+    const businessId = cleanString(formData.get("businessId"));
+    const folderInput = cleanString(formData.get("folder"));
+
+    const files = formData
+      .getAll("files")
+      .filter((item): item is File => item instanceof File);
 
     if (!businessId) {
       return NextResponse.json(
@@ -184,62 +146,86 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if (!name && !email && !phone) {
+    if (files.length === 0) {
       return NextResponse.json(
-        { success: false, error: "Lead name, email, or phone is required." },
+        { success: false, error: "At least one file is required." },
         { status: 400 }
       );
     }
 
-    const { data, error } = await supabaseAdmin
-      .from("leads")
-      .insert({
-        business_id: businessId,
-        name: name || "New Lead",
-        email: email || null,
-        phone: phone || null,
-        company: company || null,
-        source,
-        status,
-        value,
-        notes: notes || null,
-        metadata: {
-          ...(body.metadata ?? {}),
-          createdFrom: source,
-        },
-      })
-      .select()
-      .single();
+    const uploadedFiles = [];
 
-    if (error) throw error;
+    for (const file of files) {
+      const safeName =
+        file.name.replace(/[^a-zA-Z0-9._-]/g, "-") || "uploaded-file";
 
-    await trackLeadEvent({
+      const folder = folderInput || getFolderFromType(file);
+
+      const filePath = `${businessId}/${folder}/${Date.now()}-${crypto.randomUUID()}-${safeName}`;
+
+      const buffer = Buffer.from(await file.arrayBuffer());
+
+      const { error: uploadError } = await supabaseAdmin.storage
+        .from(BUCKET)
+        .upload(filePath, buffer, {
+          contentType: file.type || "application/octet-stream",
+          upsert: false,
+        });
+
+      if (uploadError) throw uploadError;
+
+      const { data: publicUrlData } = supabaseAdmin.storage
+        .from(BUCKET)
+        .getPublicUrl(filePath);
+
+      const { data, error } = await supabaseAdmin
+        .from("business_files")
+        .insert({
+          business_id: businessId,
+          name: file.name,
+          file_name: safeName,
+          file_url: publicUrlData.publicUrl,
+          file_type: file.type || "application/octet-stream",
+          folder,
+          size_bytes: file.size,
+          metadata: {
+            bucket: BUCKET,
+            path: filePath,
+            favorite: false,
+            uploadedFrom: "files_api",
+            uploadedAt: new Date().toISOString(),
+          },
+        })
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      uploadedFiles.push(cleanFile(data));
+    }
+
+    await trackFileEvent({
       businessId,
-      event: "lead_created",
-      leadId: data.id,
+      event: "files_uploaded",
       metadata: {
-        source,
-        status,
-        value,
-        hasEmail: Boolean(email),
-        hasPhone: Boolean(phone),
+        count: uploadedFiles.length,
       },
     });
 
     return NextResponse.json(
       {
         success: true,
-        lead: cleanLead(data),
+        files: uploadedFiles,
       },
       { status: 201 }
     );
   } catch (error) {
-    console.error(error);
+    console.error("Files POST error:", error);
 
     return NextResponse.json(
       {
         success: false,
-        error: getErrorMessage(error, "Unable to create lead."),
+        error: getErrorMessage(error, "Unable to upload files."),
       },
       { status: 500 }
     );
@@ -248,29 +234,49 @@ export async function POST(request: NextRequest) {
 
 export async function PATCH(request: NextRequest) {
   try {
-    const body = (await request.json()) as LeadBody;
+    const body = (await request.json()) as FilePatchBody;
 
-    const id = normalizeString(body.id);
+    const id = cleanString(body.id);
 
     if (!id) {
       return NextResponse.json(
-        { success: false, error: "Lead ID is required." },
+        { success: false, error: "File ID is required." },
         { status: 400 }
       );
     }
 
+    const { data: existingFile, error: loadError } = await supabaseAdmin
+      .from("business_files")
+      .select("*")
+      .eq("id", id)
+      .maybeSingle();
+
+    if (loadError) throw loadError;
+
+    if (!existingFile) {
+      return NextResponse.json(
+        { success: false, error: "File not found." },
+        { status: 404 }
+      );
+    }
+
+    const existingMetadata =
+      typeof existingFile.metadata === "object" && existingFile.metadata !== null
+        ? (existingFile.metadata as Record<string, unknown>)
+        : {};
+
     const updates: Record<string, unknown> = {};
 
     if (body.businessId || body.business_id) {
-      updates.business_id = getBusinessId(body);
+      updates.business_id = cleanString(body.businessId || body.business_id);
     }
 
     if (body.name !== undefined) {
-      const name = normalizeString(body.name);
+      const name = cleanString(body.name);
 
       if (!name) {
         return NextResponse.json(
-          { success: false, error: "Lead name cannot be empty." },
+          { success: false, error: "File name cannot be empty." },
           { status: 400 }
         );
       }
@@ -278,52 +284,35 @@ export async function PATCH(request: NextRequest) {
       updates.name = name;
     }
 
-    if (body.email !== undefined) {
-      const email = normalizeString(body.email);
-      updates.email = email || null;
+    if (body.folder !== undefined) {
+      updates.folder = cleanString(body.folder) || "documents";
     }
 
-    if (body.phone !== undefined) {
-      const phone = normalizeString(body.phone);
-      updates.phone = phone || null;
-    }
-
-    if (body.company !== undefined) {
-      const company = normalizeString(body.company);
-      updates.company = company || null;
-    }
-
-    if (body.source !== undefined) {
-      const source = normalizeString(body.source);
-      updates.source = source || "manual";
-    }
-
-    if (body.status !== undefined) {
-      updates.status = normalizeStatus(body.status);
-    }
-
-    if (body.value !== undefined) {
-      updates.value = normalizeValue(body.value);
-    }
-
-    if (body.notes !== undefined) {
-      const notes = normalizeString(body.notes);
-      updates.notes = notes || null;
+    if (body.favorite !== undefined) {
+      updates.metadata = {
+        ...existingMetadata,
+        favorite: Boolean(body.favorite),
+        updatedAt: new Date().toISOString(),
+      };
     }
 
     if (body.metadata !== undefined) {
-      updates.metadata = body.metadata ?? {};
+      updates.metadata = {
+        ...existingMetadata,
+        ...(body.metadata ?? {}),
+        updatedAt: new Date().toISOString(),
+      };
     }
 
     if (Object.keys(updates).length === 0) {
       return NextResponse.json(
-        { success: false, error: "No lead updates provided." },
+        { success: false, error: "No file updates provided." },
         { status: 400 }
       );
     }
 
     const { data, error } = await supabaseAdmin
-      .from("leads")
+      .from("business_files")
       .update(updates)
       .eq("id", id)
       .select()
@@ -331,27 +320,26 @@ export async function PATCH(request: NextRequest) {
 
     if (error) throw error;
 
-    await trackLeadEvent({
-      businessId: normalizeString(data.business_id),
-      event: "lead_updated",
-      leadId: data.id,
+    await trackFileEvent({
+      businessId: String(data.business_id),
+      event: "file_updated",
+      fileId: data.id,
       metadata: {
         updatedFields: Object.keys(updates),
-        status: data.status,
       },
     });
 
     return NextResponse.json({
       success: true,
-      lead: cleanLead(data),
+      file: cleanFile(data),
     });
   } catch (error) {
-    console.error(error);
+    console.error("Files PATCH error:", error);
 
     return NextResponse.json(
       {
         success: false,
-        error: getErrorMessage(error, "Unable to update lead."),
+        error: getErrorMessage(error, "Unable to update file."),
       },
       { status: 500 }
     );
@@ -366,46 +354,71 @@ export async function DELETE(request: NextRequest) {
 
     if (!id) {
       return NextResponse.json(
-        { success: false, error: "Lead ID is required." },
+        { success: false, error: "File ID is required." },
         { status: 400 }
       );
     }
 
-    const { data: lead, error: loadError } = await supabaseAdmin
-      .from("leads")
-      .select("id, business_id, status, source")
+    const { data: file, error: loadError } = await supabaseAdmin
+      .from("business_files")
+      .select("*")
       .eq("id", id)
       .maybeSingle();
 
     if (loadError) throw loadError;
 
-    const { error } = await supabaseAdmin.from("leads").delete().eq("id", id);
+    if (!file) {
+      return NextResponse.json(
+        { success: false, error: "File not found." },
+        { status: 404 }
+      );
+    }
+
+    const metadata =
+      typeof file.metadata === "object" && file.metadata !== null
+        ? (file.metadata as Record<string, unknown>)
+        : {};
+
+    const path = typeof metadata.path === "string" ? metadata.path : "";
+
+    if (path) {
+      const { error: storageError } = await supabaseAdmin.storage
+        .from(BUCKET)
+        .remove([path]);
+
+      if (storageError) {
+        console.error("Storage delete failed:", storageError);
+      }
+    }
+
+    const { error } = await supabaseAdmin
+      .from("business_files")
+      .delete()
+      .eq("id", id);
 
     if (error) throw error;
 
-    if (lead?.business_id) {
-      await trackLeadEvent({
-        businessId: lead.business_id,
-        event: "lead_deleted",
-        leadId: id,
-        metadata: {
-          status: lead.status,
-          source: lead.source,
-        },
-      });
-    }
+    await trackFileEvent({
+      businessId: String(file.business_id),
+      event: "file_deleted",
+      fileId: id,
+      metadata: {
+        folder: file.folder,
+        fileType: file.file_type,
+      },
+    });
 
     return NextResponse.json({
       success: true,
       deletedId: id,
     });
   } catch (error) {
-    console.error(error);
+    console.error("Files DELETE error:", error);
 
     return NextResponse.json(
       {
         success: false,
-        error: getErrorMessage(error, "Unable to delete lead."),
+        error: getErrorMessage(error, "Unable to delete file."),
       },
       { status: 500 }
     );

@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 
 import { supabaseAdmin } from "@/lib/supabase-admin";
+import ProductsClient from "./client";
 
 export const dynamic = "force-dynamic";
 
@@ -30,7 +31,8 @@ type ProductRow = {
   business_id: string;
   name: string;
   description: string | null;
-  price_cents: number | null;
+  price: number;
+  price_cents?: number | null;
   currency: string | null;
   type: string | null;
   status: string | null;
@@ -47,6 +49,42 @@ function formatCurrency(cents: number | null, currency = "USD") {
     currency,
     maximumFractionDigits: 0,
   }).format((cents ?? 0) / 100);
+}
+
+function normalizeProduct(product: Record<string, unknown>): ProductRow {
+  const priceCents =
+    typeof product.price_cents === "number"
+      ? product.price_cents
+      : typeof product.price === "number"
+        ? Math.round(product.price * 100)
+        : 0;
+
+  return {
+    id: String(product.id),
+    business_id: String(product.business_id),
+    name: String(product.name ?? "Untitled Product"),
+    description:
+      typeof product.description === "string" ? product.description : null,
+    price:
+      typeof product.price === "number" ? product.price : priceCents / 100,
+    price_cents: priceCents,
+    currency: typeof product.currency === "string" ? product.currency : "USD",
+    type: typeof product.type === "string" ? product.type : "service",
+    status: typeof product.status === "string" ? product.status : "draft",
+    image_url:
+      typeof product.image_url === "string" ? product.image_url : null,
+    file_url: typeof product.file_url === "string" ? product.file_url : null,
+    inventory:
+      typeof product.inventory === "number" ? product.inventory : null,
+    metadata:
+      typeof product.metadata === "object" && product.metadata !== null
+        ? (product.metadata as Record<string, unknown>)
+        : null,
+    created_at:
+      typeof product.created_at === "string"
+        ? product.created_at
+        : new Date().toISOString(),
+  };
 }
 
 async function loadProducts(id: string) {
@@ -72,7 +110,9 @@ async function loadProducts(id: string) {
 
   return {
     business: businessResult.data as BusinessRow,
-    products: (productsResult.data ?? []) as ProductRow[],
+    products: ((productsResult.data ?? []) as Record<string, unknown>[]).map(
+      normalizeProduct
+    ),
   };
 }
 
@@ -127,8 +167,8 @@ export default async function ProductsPage({ params }: Props) {
                 </h1>
 
                 <p className="mt-4 max-w-3xl text-sm leading-6 text-zinc-400 sm:text-base">
-                  Manage offers, services, packages, memberships, downloads, and
-                  checkout-ready products for this CreatorOS AI business.
+                  Create, edit, publish, archive, and delete checkout-ready
+                  products for this CreatorOS AI business.
                 </p>
               </div>
 
@@ -139,11 +179,11 @@ export default async function ProductsPage({ params }: Props) {
                 </button>
 
                 <a
-                  href="#product-catalog"
+                  href="#product-manager"
                   className="inline-flex items-center justify-center gap-2 rounded-2xl bg-yellow-400 px-5 py-3 text-sm font-black text-black transition hover:bg-yellow-300"
                 >
                   <Plus className="h-4 w-4" />
-                  Manage Products
+                  New Product
                 </a>
               </div>
             </div>
@@ -182,93 +222,8 @@ export default async function ProductsPage({ params }: Props) {
           </div>
         </div>
 
-        <div
-          id="product-catalog"
-          className="rounded-3xl border border-white/10 bg-white/[0.03] p-5 sm:p-6"
-        >
-          <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <h2 className="text-2xl font-black">Product Catalog</h2>
-              <p className="mt-1 text-sm text-zinc-500">
-                Current products saved to this business.
-              </p>
-            </div>
-
-            <div className="rounded-full border border-yellow-400/20 bg-yellow-400/10 px-4 py-2 text-xs font-bold text-yellow-200">
-              Step 8 adds create, edit, archive, and delete controls
-            </div>
-          </div>
-
-          {products.length === 0 ? (
-            <div className="rounded-2xl border border-dashed border-white/10 bg-black/30 p-10 text-center">
-              <Package className="mx-auto h-10 w-10 text-zinc-600" />
-
-              <h3 className="mt-4 text-xl font-black">No products yet</h3>
-
-              <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-zinc-500">
-                Generate products with AI or create your first product manually.
-                Product editing controls are added in the next step.
-              </p>
-            </div>
-          ) : (
-            <div className="grid gap-4">
-              {products.map((product) => (
-                <div
-                  key={product.id}
-                  className="flex flex-col gap-4 rounded-3xl border border-white/10 bg-black/40 p-5 lg:flex-row lg:items-center lg:justify-between"
-                >
-                  <div className="flex items-start gap-4">
-                    <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-yellow-400/10 text-yellow-200">
-                      <Package className="h-6 w-6" />
-                    </div>
-
-                    <div>
-                      <h3 className="text-xl font-black">{product.name}</h3>
-
-                      <p className="mt-2 max-w-2xl text-sm leading-6 text-zinc-400">
-                        {product.description || "No description saved yet."}
-                      </p>
-
-                      <div className="mt-3 flex flex-wrap gap-2">
-                        <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-xs font-bold capitalize text-zinc-400">
-                          {product.type || "service"}
-                        </span>
-
-                        <span
-                          className={
-                            product.status === "active"
-                              ? "rounded-full border border-emerald-400/20 bg-emerald-400/10 px-3 py-1 text-xs font-bold capitalize text-emerald-300"
-                              : "rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-xs font-bold capitalize text-zinc-400"
-                          }
-                        >
-                          {product.status || "draft"}
-                        </span>
-
-                        {typeof product.inventory === "number" ? (
-                          <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-xs font-bold text-zinc-400">
-                            Inventory: {product.inventory}
-                          </span>
-                        ) : null}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center lg:flex-col lg:items-end">
-                    <p className="text-2xl font-black text-yellow-300">
-                      {formatCurrency(
-                        product.price_cents,
-                        product.currency ?? "USD"
-                      )}
-                    </p>
-
-                    <p className="text-xs text-zinc-500">
-                      {new Date(product.created_at).toLocaleDateString()}
-                    </p>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
+        <div id="product-manager">
+          <ProductsClient businessId={business.id} initialProducts={products} />
         </div>
       </section>
     </main>
