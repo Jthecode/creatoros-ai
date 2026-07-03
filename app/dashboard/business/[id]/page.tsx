@@ -12,9 +12,11 @@ import {
   Megaphone,
   Package,
   Pencil,
+  Rocket,
   Settings,
   ShoppingBag,
   Sparkles,
+  Target,
   Users,
   Workflow,
 } from "lucide-react";
@@ -76,6 +78,20 @@ type WebsitePageRow = {
   is_homepage: boolean | null;
 };
 
+type FunnelRow = {
+  id: string;
+  business_id: string;
+  name: string;
+  slug: string;
+  description: string | null;
+  goal: string | null;
+  target_audience: string | null;
+  offer: string | null;
+  status: string | null;
+  is_published: boolean | null;
+  created_at: string;
+};
+
 type DashboardStats = {
   revenue: number;
   products: number;
@@ -87,6 +103,9 @@ type DashboardStats = {
   automations: number;
   websitePages: number;
   publishedPages: number;
+  funnels: number;
+  publishedFunnels: number;
+  funnelPages: number;
 };
 
 function formatCurrency(cents: number) {
@@ -106,6 +125,8 @@ async function loadBusiness(id: string) {
     commandRunsResult,
     automationsResult,
     websitePagesResult,
+    funnelsResult,
+    funnelPagesResult,
   ] = await Promise.all([
     supabaseAdmin.from("businesses").select("*").eq("id", id).single(),
 
@@ -141,6 +162,19 @@ async function loadBusiness(id: string) {
       .select("id, title, slug, status, is_homepage")
       .eq("business_id", id)
       .order("created_at", { ascending: false }),
+
+    supabaseAdmin
+      .from("funnels")
+      .select(
+        "id, business_id, name, slug, description, goal, target_audience, offer, status, is_published, created_at"
+      )
+      .eq("business_id", id)
+      .order("created_at", { ascending: false }),
+
+    supabaseAdmin
+      .from("funnel_pages")
+      .select("id", { count: "exact", head: true })
+      .eq("business_id", id),
   ]);
 
   if (businessResult.error || !businessResult.data) return null;
@@ -150,12 +184,15 @@ async function loadBusiness(id: string) {
   if (commandRunsResult.error) throw commandRunsResult.error;
   if (automationsResult.error) throw automationsResult.error;
   if (websitePagesResult.error) throw websitePagesResult.error;
+  if (funnelsResult.error) throw funnelsResult.error;
+  if (funnelPagesResult.error) throw funnelPagesResult.error;
 
   const business = businessResult.data as BusinessRow;
   const products = (productsResult.data ?? []) as ProductRow[];
   const agents = (agentsResult.data ?? []) as AgentRow[];
   const orders = (ordersResult.data ?? []) as OrderRow[];
   const websitePages = (websitePagesResult.data ?? []) as WebsitePageRow[];
+  const funnels = (funnelsResult.data ?? []) as FunnelRow[];
 
   const paidOrders = orders.filter((order) => order.status === "paid");
 
@@ -166,6 +203,10 @@ async function loadBusiness(id: string) {
 
   const customers = new Set(
     orders.map((order) => order.customer_email).filter(Boolean)
+  );
+
+  const publishedFunnels = funnels.filter(
+    (funnel) => funnel.is_published || funnel.status === "published"
   );
 
   const stats: DashboardStats = {
@@ -180,6 +221,9 @@ async function loadBusiness(id: string) {
     websitePages: websitePages.length,
     publishedPages: websitePages.filter((page) => page.status === "published")
       .length,
+    funnels: funnels.length,
+    publishedFunnels: publishedFunnels.length,
+    funnelPages: funnelPagesResult.count ?? 0,
   };
 
   return {
@@ -188,22 +232,36 @@ async function loadBusiness(id: string) {
     agents,
     orders,
     websitePages,
+    funnels,
     stats,
   };
 }
+
 export default async function BusinessDashboard({ params }: Props) {
   const { id } = await params;
   const data = await loadBusiness(id);
 
   if (!data) notFound();
 
-  const { business, products, agents, websitePages, stats } = data;
+  const { business, products, agents, websitePages, funnels, stats } = data;
 
   const storefrontHref = business.slug
     ? `/storefront/${business.slug}`
     : `/dashboard/business/${business.id}/storefront`;
 
   const websiteHref = business.slug ? `/site/${business.slug}` : "#";
+
+  const funnelsHref = `/dashboard/business/${business.id}/funnels`;
+
+  const firstPublicFunnel =
+    funnels.find(
+      (funnel) => funnel.is_published || funnel.status === "published"
+    ) ?? funnels[0];
+
+  const publicFunnelHref =
+    business.slug && firstPublicFunnel?.slug
+      ? `/funnel/${business.slug}/${firstPublicFunnel.slug}`
+      : funnelsHref;
 
   const healthItems = [
     {
@@ -225,6 +283,10 @@ export default async function BusinessDashboard({ params }: Props) {
     {
       label: "Website Pages",
       complete: stats.websitePages > 0,
+    },
+    {
+      label: "AI Funnels",
+      complete: stats.funnels > 0,
     },
     {
       label: "Automations",
@@ -252,6 +314,11 @@ export default async function BusinessDashboard({ params }: Props) {
       icon: Bot,
     },
     {
+      title: "Funnels",
+      value: stats.funnels.toString(),
+      icon: Rocket,
+    },
+    {
       title: "AI Commands",
       value: stats.commands.toString(),
       icon: Command,
@@ -264,6 +331,13 @@ export default async function BusinessDashboard({ params }: Props) {
       description: "Run your business from one AI command.",
       href: `/dashboard/command-center?businessId=${business.id}`,
       icon: Command,
+      featured: true,
+    },
+    {
+      title: "AI Funnel Builder",
+      description: "Build sales, lead, launch, and offer funnels with AI.",
+      href: funnelsHref,
+      icon: Rocket,
       featured: true,
     },
     {
@@ -308,6 +382,11 @@ export default async function BusinessDashboard({ params }: Props) {
       title: "Products",
       href: `/dashboard/business/${business.id}/products`,
       icon: Package,
+    },
+    {
+      title: "Funnels",
+      href: funnelsHref,
+      icon: Rocket,
     },
     {
       title: "Customers",
@@ -356,7 +435,7 @@ export default async function BusinessDashboard({ params }: Props) {
 
                 <p className="mt-5 max-w-3xl text-sm leading-7 text-zinc-400 sm:text-base">
                   {business.description ||
-                    "Manage your storefront, website, products, customers, AI employees, automations, and growth tools from one command center."}
+                    "Manage your storefront, website, products, customers, AI employees, funnels, automations, and growth tools from one command center."}
                 </p>
 
                 <div className="mt-5 flex flex-wrap gap-2">
@@ -388,6 +467,14 @@ export default async function BusinessDashboard({ params }: Props) {
                 </Link>
 
                 <Link
+                  href={funnelsHref}
+                  className="inline-flex items-center justify-center gap-2 rounded-2xl border border-yellow-400/30 bg-yellow-400/10 px-5 py-3 text-sm font-bold text-yellow-100 transition hover:bg-yellow-400/20"
+                >
+                  <Rocket className="h-4 w-4" />
+                  AI Funnels
+                </Link>
+
+                <Link
                   href={websiteHref}
                   className="inline-flex items-center justify-center gap-2 rounded-2xl border border-white/10 bg-black/40 px-5 py-3 text-sm font-bold text-white transition hover:border-yellow-400/40 hover:text-yellow-200"
                 >
@@ -415,7 +502,7 @@ export default async function BusinessDashboard({ params }: Props) {
           </div>
         </div>
 
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
           {cards.map((card) => {
             const Icon = card.icon;
 
@@ -473,7 +560,8 @@ export default async function BusinessDashboard({ params }: Props) {
               ))}
             </div>
           </div>
-                    <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5 sm:p-6">
+
+          <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5 sm:p-6">
             <div className="mb-5 flex items-center gap-3">
               <Sparkles className="h-5 w-5 text-yellow-200" />
               <h2 className="text-2xl font-black">AI Business Tools</h2>
@@ -504,13 +592,7 @@ export default async function BusinessDashboard({ params }: Props) {
                         {tool.title}
                       </h3>
 
-                      <Icon
-                        className={
-                          tool.featured
-                            ? "h-5 w-5 text-yellow-200"
-                            : "h-5 w-5 text-yellow-200"
-                        }
-                      />
+                      <Icon className="h-5 w-5 text-yellow-200" />
                     </div>
 
                     <p
@@ -525,6 +607,199 @@ export default async function BusinessDashboard({ params }: Props) {
                   </Link>
                 );
               })}
+            </div>
+          </div>
+        </div>
+
+        <div className="overflow-hidden rounded-3xl border border-yellow-400/20 bg-yellow-400/10">
+          <div className="relative p-5 sm:p-6 lg:p-8">
+            <div className="absolute right-0 top-0 h-72 w-72 rounded-full bg-yellow-300/10 blur-3xl" />
+            <div className="absolute bottom-0 left-0 h-72 w-72 rounded-full bg-white/5 blur-3xl" />
+
+            <div className="relative z-10">
+              <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+                <div>
+                  <div className="inline-flex items-center gap-2 rounded-full border border-yellow-400/20 bg-black/30 px-3 py-1 text-xs font-black uppercase tracking-wide text-yellow-200">
+                    <Rocket className="h-3.5 w-3.5" />
+                    AI Funnel Builder
+                  </div>
+
+                  <h2 className="mt-4 text-3xl font-black tracking-tight text-yellow-100 sm:text-4xl">
+                    Build sales funnels for this business.
+                  </h2>
+
+                  <p className="mt-3 max-w-3xl text-sm leading-7 text-yellow-100/75 sm:text-base">
+                    Create landing pages, offer pages, lead capture pages,
+                    booking funnels, launch funnels, thank-you pages, and
+                    customer journeys powered by CreatorOS AI.
+                  </p>
+                </div>
+
+                <div className="flex flex-col gap-3 sm:flex-row lg:flex-col">
+                  <Link
+                    href={funnelsHref}
+                    className="inline-flex items-center justify-center gap-2 rounded-2xl bg-yellow-400 px-5 py-3 text-sm font-black text-black transition hover:bg-yellow-300"
+                  >
+                    Open Funnel Builder
+                    <Rocket className="h-4 w-4" />
+                  </Link>
+
+                  {funnels.length > 0 ? (
+                    <Link
+                      href={publicFunnelHref}
+                      className="inline-flex items-center justify-center gap-2 rounded-2xl border border-yellow-400/30 bg-black/30 px-5 py-3 text-sm font-bold text-yellow-100 transition hover:bg-yellow-400/10"
+                    >
+                      Preview Funnel
+                      <Target className="h-4 w-4" />
+                    </Link>
+                  ) : null}
+                </div>
+              </div>
+
+              <div className="mt-6 grid gap-3 sm:grid-cols-3">
+                <div className="rounded-2xl border border-yellow-400/20 bg-black/30 p-4">
+                  <p className="text-xs font-bold uppercase tracking-wide text-yellow-100/60">
+                    Total Funnels
+                  </p>
+                  <p className="mt-2 text-3xl font-black text-yellow-100">
+                    {stats.funnels}
+                  </p>
+                </div>
+
+                <div className="rounded-2xl border border-yellow-400/20 bg-black/30 p-4">
+                  <p className="text-xs font-bold uppercase tracking-wide text-yellow-100/60">
+                    Published
+                  </p>
+                  <p className="mt-2 text-3xl font-black text-yellow-100">
+                    {stats.publishedFunnels}
+                  </p>
+                </div>
+
+                <div className="rounded-2xl border border-yellow-400/20 bg-black/30 p-4">
+                  <p className="text-xs font-bold uppercase tracking-wide text-yellow-100/60">
+                    Funnel Pages
+                  </p>
+                  <p className="mt-2 text-3xl font-black text-yellow-100">
+                    {stats.funnelPages}
+                  </p>
+                </div>
+              </div>
+
+              {funnels.length === 0 ? (
+                <div className="mt-6 rounded-3xl border border-dashed border-yellow-400/25 bg-black/30 p-8 text-center">
+                  <Rocket className="mx-auto h-10 w-10 text-yellow-200/70" />
+                  <h3 className="mt-4 text-xl font-black text-yellow-100">
+                    No funnels built yet
+                  </h3>
+                  <p className="mx-auto mt-2 max-w-2xl text-sm leading-6 text-yellow-100/65">
+                    Start with one AI funnel for your main offer. CreatorOS can
+                    help you create the landing page, offer structure,
+                    call-to-action, lead capture flow, and thank-you page.
+                  </p>
+
+                  <Link
+                    href={funnelsHref}
+                    className="mt-5 inline-flex items-center gap-2 rounded-2xl bg-yellow-400 px-5 py-3 text-sm font-black text-black transition hover:bg-yellow-300"
+                  >
+                    <Sparkles className="h-4 w-4" />
+                    Create First Funnel
+                  </Link>
+                </div>
+              ) : (
+                <div className="mt-6">
+                  <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <h3 className="text-xl font-black text-yellow-100">
+                      Recent Funnels
+                    </h3>
+
+                    <Link
+                      href={funnelsHref}
+                      className="text-sm font-bold text-yellow-200 hover:text-yellow-100"
+                    >
+                      Manage All Funnels
+                    </Link>
+                  </div>
+
+                  <div className="grid gap-3 md:grid-cols-2">
+                    {funnels.slice(0, 4).map((funnel) => {
+                      const isPublished =
+                        funnel.is_published || funnel.status === "published";
+
+                      const funnelPreviewHref =
+                        business.slug && funnel.slug
+                          ? `/funnel/${business.slug}/${funnel.slug}`
+                          : funnelsHref;
+
+                      return (
+                        <div
+                          key={funnel.id}
+                          className="rounded-2xl border border-yellow-400/20 bg-black/30 p-5"
+                        >
+                          <div className="flex items-start justify-between gap-4">
+                            <div>
+                              <h4 className="font-black text-yellow-100">
+                                {funnel.name}
+                              </h4>
+
+                              <p className="mt-1 font-mono text-xs text-yellow-100/45">
+                                /funnel/{business.slug || "business"}/
+                                {funnel.slug}
+                              </p>
+                            </div>
+
+                            <span
+                              className={
+                                isPublished
+                                  ? "rounded-full border border-emerald-400/20 bg-emerald-400/10 px-3 py-1 text-xs font-black text-emerald-300"
+                                  : "rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-xs font-black text-zinc-400"
+                              }
+                            >
+                              {isPublished ? "Live" : funnel.status || "Draft"}
+                            </span>
+                          </div>
+
+                          <p className="mt-4 line-clamp-2 text-sm leading-6 text-yellow-100/65">
+                            {funnel.description ||
+                              funnel.goal ||
+                              funnel.offer ||
+                              "AI-powered funnel ready to connect your offer, audience, and conversion path."}
+                          </p>
+
+                          <div className="mt-4 flex flex-wrap gap-2">
+                            {funnel.goal ? (
+                              <span className="rounded-full border border-yellow-400/20 bg-yellow-400/10 px-3 py-1 text-xs font-bold text-yellow-200">
+                                {funnel.goal}
+                              </span>
+                            ) : null}
+
+                            {funnel.target_audience ? (
+                              <span className="rounded-full border border-white/10 bg-black/40 px-3 py-1 text-xs font-bold text-yellow-100/70">
+                                {funnel.target_audience}
+                              </span>
+                            ) : null}
+                          </div>
+
+                          <div className="mt-5 flex gap-2">
+                            <Link
+                              href={funnelsHref}
+                              className="inline-flex flex-1 items-center justify-center rounded-2xl bg-yellow-400 px-4 py-3 text-sm font-black text-black transition hover:bg-yellow-300"
+                            >
+                              Manage
+                            </Link>
+
+                            <Link
+                              href={funnelPreviewHref}
+                              className="inline-flex flex-1 items-center justify-center rounded-2xl border border-yellow-400/20 bg-black/40 px-4 py-3 text-sm font-bold text-yellow-100 transition hover:bg-yellow-400/10"
+                            >
+                              Preview
+                            </Link>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -549,7 +824,9 @@ export default async function BusinessDashboard({ params }: Props) {
             {websitePages.length === 0 ? (
               <div className="rounded-3xl border border-dashed border-white/10 bg-black/30 p-8 text-center">
                 <FileText className="mx-auto h-10 w-10 text-zinc-600" />
-                <h3 className="mt-4 text-xl font-black">No website pages yet</h3>
+                <h3 className="mt-4 text-xl font-black">
+                  No website pages yet
+                </h3>
                 <p className="mx-auto mt-2 max-w-lg text-sm leading-6 text-zinc-500">
                   Use the AI Website Builder to create your homepage, about
                   page, services page, FAQ, contact page, and SEO-ready website.
@@ -643,23 +920,25 @@ export default async function BusinessDashboard({ params }: Props) {
             </Link>
           </div>
 
-          <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5 sm:p-6">
+          <div className="rounded-3xl border border-yellow-400/20 bg-yellow-400/10 p-5 sm:p-6">
             <div className="flex items-center gap-3">
-              <Megaphone className="h-5 w-5 text-yellow-200" />
-              <h2 className="text-xl font-black">Marketing Center</h2>
+              <Rocket className="h-5 w-5 text-yellow-200" />
+              <h2 className="text-xl font-black text-yellow-100">
+                AI Funnel Builder
+              </h2>
             </div>
 
-            <p className="mt-4 text-sm leading-6 text-zinc-400">
-              Generate social posts, email campaigns, launch calendars, SEO
-              content, ads, and brand messaging.
+            <p className="mt-4 text-sm leading-6 text-yellow-100/75">
+              Build conversion funnels for your offers, leads, bookings,
+              launches, products, and services.
             </p>
 
             <Link
-              href={`/dashboard/business/${business.id}/marketing`}
-              className="mt-5 inline-flex w-full items-center justify-center gap-2 rounded-2xl border border-white/10 bg-black/40 px-5 py-3 text-sm font-bold text-white transition hover:border-yellow-400/40 hover:text-yellow-200"
+              href={funnelsHref}
+              className="mt-5 inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-yellow-400 px-5 py-3 text-sm font-black text-black transition hover:bg-yellow-300"
             >
-              Open Marketing
-              <Megaphone className="h-4 w-4" />
+              Build Funnel
+              <Rocket className="h-4 w-4" />
             </Link>
           </div>
 
@@ -683,7 +962,8 @@ export default async function BusinessDashboard({ params }: Props) {
             </Link>
           </div>
         </div>
-                <div className="grid gap-6 lg:grid-cols-2">
+
+        <div className="grid gap-6 lg:grid-cols-2">
           <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5 sm:p-6">
             <div className="flex items-center justify-between gap-4">
               <div className="flex items-center gap-3">
@@ -703,8 +983,9 @@ export default async function BusinessDashboard({ params }: Props) {
               <div className="mt-5 rounded-2xl border border-dashed border-white/10 bg-black/30 p-6 text-center">
                 <Package className="mx-auto h-9 w-9 text-zinc-600" />
                 <p className="mt-3 text-sm leading-6 text-zinc-400">
-                  No products saved yet. Use AI Builder, Website Builder, or
-                  Command Center to generate products for this business.
+                  No products saved yet. Use AI Builder, Funnel Builder,
+                  Website Builder, or Command Center to generate products for
+                  this business.
                 </p>
               </div>
             ) : (
@@ -874,13 +1155,14 @@ export default async function BusinessDashboard({ params }: Props) {
             </Link>
           </div>
         </div>
-                <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5 sm:p-6">
+
+        <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5 sm:p-6">
           <div className="mb-5 flex items-center gap-3">
             <Activity className="h-5 w-5 text-yellow-200" />
             <h2 className="text-2xl font-black">Next Best Moves</h2>
           </div>
 
-          <div className="grid gap-3 md:grid-cols-3">
+          <div className="grid gap-3 md:grid-cols-4">
             <Link
               href={`/dashboard/command-center?businessId=${business.id}`}
               className="rounded-2xl border border-yellow-400/30 bg-yellow-400/10 p-5 transition hover:bg-yellow-400/20"
@@ -892,6 +1174,20 @@ export default async function BusinessDashboard({ params }: Props) {
               <p className="mt-2 text-sm leading-6 text-yellow-100/70">
                 Ask CreatorOS to build, launch, automate, or improve this
                 business.
+              </p>
+            </Link>
+
+            <Link
+              href={funnelsHref}
+              className="rounded-2xl border border-yellow-400/30 bg-yellow-400/10 p-5 transition hover:bg-yellow-400/20"
+            >
+              <Rocket className="h-6 w-6 text-yellow-200" />
+              <h3 className="mt-4 font-black text-yellow-100">
+                Build a sales funnel
+              </h3>
+              <p className="mt-2 text-sm leading-6 text-yellow-100/70">
+                Create a lead, sales, booking, product, service, or launch
+                funnel.
               </p>
             </Link>
 
@@ -939,18 +1235,28 @@ export default async function BusinessDashboard({ params }: Props) {
 
               <p className="mt-3 max-w-3xl text-sm leading-7 text-yellow-100/75">
                 CreatorOS AI can now connect this business profile, products,
-                AI employees, website pages, automations, CRM, orders, and
-                marketing tools into one operating system.
+                AI employees, website pages, funnels, automations, CRM, orders,
+                and marketing tools into one operating system.
               </p>
             </div>
 
-            <Link
-              href={`/dashboard/command-center?businessId=${business.id}`}
-              className="inline-flex items-center justify-center gap-2 rounded-2xl bg-yellow-400 px-6 py-3 text-sm font-black text-black transition hover:bg-yellow-300"
-            >
-              Open AI Command Center
-              <Command className="h-4 w-4" />
-            </Link>
+            <div className="flex flex-col gap-3 sm:flex-row">
+              <Link
+                href={funnelsHref}
+                className="inline-flex items-center justify-center gap-2 rounded-2xl border border-yellow-400/30 bg-black/30 px-6 py-3 text-sm font-black text-yellow-100 transition hover:bg-yellow-400/10"
+              >
+                Build AI Funnel
+                <Rocket className="h-4 w-4" />
+              </Link>
+
+              <Link
+                href={`/dashboard/command-center?businessId=${business.id}`}
+                className="inline-flex items-center justify-center gap-2 rounded-2xl bg-yellow-400 px-6 py-3 text-sm font-black text-black transition hover:bg-yellow-300"
+              >
+                Open AI Command Center
+                <Command className="h-4 w-4" />
+              </Link>
+            </div>
           </div>
         </div>
       </section>
