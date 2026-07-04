@@ -1,6 +1,14 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ArrowLeft, ArrowRight, CheckCircle2, Sparkles } from "lucide-react";
+import {
+  ArrowLeft,
+  ArrowRight,
+  CheckCircle2,
+  Mail,
+  Phone,
+  Sparkles,
+  User,
+} from "lucide-react";
 
 import { supabaseAdmin } from "@/lib/supabase-admin";
 
@@ -30,19 +38,70 @@ type Funnel = {
   description: string | null;
   goal: string | null;
   status: string;
+  is_published: boolean | null;
 };
 
 type FunnelPage = {
   id: string;
+  business_id: string;
+  funnel_id: string;
   title: string;
   slug: string;
-  type: string;
+  type: string | null;
+  page_type: string | null;
   sort_order: number;
+  headline: string | null;
+  subheadline: string | null;
+  body: string | null;
+  cta_text: string | null;
+  cta_url: string | null;
   html_content: string | null;
   seo_title: string | null;
   seo_description: string | null;
   status: string;
+  is_published: boolean | null;
 };
+
+type LeadForm = {
+  id: string;
+  business_id: string;
+  funnel_id: string | null;
+  funnel_page_id: string | null;
+  name: string;
+  slug: string;
+  title: string;
+  description: string | null;
+  submit_button_text: string;
+  form_type: string;
+  status: string;
+  fields: unknown;
+  success_message: string | null;
+  redirect_url: string | null;
+  is_active: boolean | null;
+  is_published: boolean | null;
+};
+
+async function trackPageView(options: {
+  businessId: string;
+  funnelId: string;
+  funnelPageId: string;
+  leadFormId?: string | null;
+  pageUrl: string;
+}) {
+  await supabaseAdmin.from("conversion_events").insert({
+    business_id: options.businessId,
+    funnel_id: options.funnelId,
+    funnel_page_id: options.funnelPageId,
+    lead_form_id: options.leadFormId || null,
+    event_name: "Funnel Page Viewed",
+    event_type: "page_view",
+    source: "funnel",
+    page_url: options.pageUrl,
+    metadata: {
+      source: "server_page_render",
+    },
+  });
+}
 
 async function loadFunnelPage(
   businessSlug: string,
@@ -59,10 +118,12 @@ async function loadFunnelPage(
 
   const { data: funnel, error: funnelError } = await supabaseAdmin
     .from("funnels")
-    .select("id, business_id, name, slug, description, goal, status")
+    .select(
+      "id, business_id, name, slug, description, goal, status, is_published"
+    )
     .eq("business_id", business.id)
     .eq("slug", funnelSlug)
-    .eq("status", "published")
+    .or("status.eq.published,is_published.eq.true")
     .single();
 
   if (funnelError || !funnel) return null;
@@ -70,10 +131,10 @@ async function loadFunnelPage(
   const { data: pages, error: pagesError } = await supabaseAdmin
     .from("funnel_pages")
     .select(
-      "id, title, slug, type, sort_order, html_content, seo_title, seo_description, status"
+      "id, business_id, funnel_id, title, slug, type, page_type, sort_order, headline, subheadline, body, cta_text, cta_url, html_content, seo_title, seo_description, status, is_published"
     )
     .eq("funnel_id", funnel.id)
-    .eq("status", "published")
+    .or("status.eq.published,is_published.eq.true")
     .order("sort_order", { ascending: true });
 
   if (pagesError) throw pagesError;
@@ -82,6 +143,19 @@ async function loadFunnelPage(
   const currentPage = funnelPages.find((page) => page.slug === pageSlug);
 
   if (!currentPage) return null;
+
+  const { data: leadForm } = await supabaseAdmin
+    .from("lead_forms")
+    .select(
+      "id, business_id, funnel_id, funnel_page_id, name, slug, title, description, submit_button_text, form_type, status, fields, success_message, redirect_url, is_active, is_published"
+    )
+    .eq("business_id", business.id)
+    .or(`funnel_page_id.eq.${currentPage.id},funnel_id.eq.${funnel.id}`)
+    .eq("is_active", true)
+    .or("status.eq.published,is_published.eq.true")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
 
   const currentIndex = funnelPages.findIndex(
     (page) => page.id === currentPage.id
@@ -97,6 +171,7 @@ async function loadFunnelPage(
     currentPage,
     previousPage,
     nextPage,
+    leadForm: (leadForm ?? null) as LeadForm | null,
   };
 }
 
@@ -116,6 +191,7 @@ export async function generateMetadata({ params }: Props) {
       `${data.currentPage.title} | ${data.funnel.name}`,
     description:
       data.currentPage.seo_description ||
+      data.currentPage.subheadline ||
       data.funnel.description ||
       data.business.description ||
       `${data.currentPage.title} by ${data.business.name}`,
@@ -128,7 +204,38 @@ export default async function FunnelStepPage({ params }: Props) {
 
   if (!data) notFound();
 
-  const { business, funnel, pages, currentPage, previousPage, nextPage } = data;
+  const {
+    business,
+    funnel,
+    pages,
+    currentPage,
+    previousPage,
+    nextPage,
+    leadForm,
+  } = data;
+
+  const pageType =
+    currentPage.page_type || currentPage.type || "funnel_step";
+
+  const pageUrl = `/funnel/${business.slug}/${funnel.slug}/${currentPage.slug}`;
+
+  await trackPageView({
+    businessId: business.id,
+    funnelId: funnel.id,
+    funnelPageId: currentPage.id,
+    leadFormId: leadForm?.id || null,
+    pageUrl,
+  });
+
+  const nextHref = nextPage
+    ? `/funnel/${business.slug}/${funnel.slug}/${nextPage.slug}`
+    : `/storefront/${business.slug}`;
+
+  const previousHref = previousPage
+    ? previousPage.sort_order === 1
+      ? `/funnel/${business.slug}/${funnel.slug}`
+      : `/funnel/${business.slug}/${funnel.slug}/${previousPage.slug}`
+    : null;
 
   return (
     <main className="min-h-screen bg-[#050505] text-white">
@@ -207,46 +314,39 @@ export default async function FunnelStepPage({ params }: Props) {
             <div className="relative z-10">
               <div className="inline-flex items-center gap-2 rounded-full border border-yellow-400/20 bg-yellow-400/10 px-3 py-1 text-xs font-bold uppercase tracking-wide text-yellow-200">
                 <CheckCircle2 className="h-3.5 w-3.5" />
-                {currentPage.type}
+                {pageType.replaceAll("_", " ")}
               </div>
 
               <h1 className="mt-5 max-w-4xl text-4xl font-black tracking-tight sm:text-6xl">
-                {currentPage.title}
+                {currentPage.headline || currentPage.title}
               </h1>
 
               <p className="mt-5 max-w-3xl text-base leading-7 text-zinc-400">
-                {currentPage.seo_description ||
+                {currentPage.subheadline ||
+                  currentPage.seo_description ||
                   funnel.description ||
                   business.description ||
                   "This funnel step was built with CreatorOS AI."}
               </p>
 
-              <div className="mt-8 flex flex-wrap gap-3">
-                {nextPage ? (
-                  <Link
-                    href={`/funnel/${business.slug}/${funnel.slug}/${nextPage.slug}`}
-                    className="inline-flex items-center gap-2 rounded-2xl bg-yellow-400 px-5 py-3 text-sm font-black text-black transition hover:bg-yellow-300"
-                  >
-                    Continue
-                    <ArrowRight className="h-4 w-4" />
-                  </Link>
-                ) : (
-                  <Link
-                    href={`/storefront/${business.slug}`}
-                    className="inline-flex items-center gap-2 rounded-2xl bg-yellow-400 px-5 py-3 text-sm font-black text-black transition hover:bg-yellow-300"
-                  >
-                    Finish
-                    <ArrowRight className="h-4 w-4" />
-                  </Link>
-                )}
+              {currentPage.body ? (
+                <p className="mt-5 max-w-3xl text-sm leading-7 text-zinc-500">
+                  {currentPage.body}
+                </p>
+              ) : null}
 
-                {previousPage ? (
+              <div className="mt-8 flex flex-wrap gap-3">
+                <Link
+                  href={nextHref}
+                  className="inline-flex items-center gap-2 rounded-2xl bg-yellow-400 px-5 py-3 text-sm font-black text-black transition hover:bg-yellow-300"
+                >
+                  {currentPage.cta_text || (nextPage ? "Continue" : "Finish")}
+                  <ArrowRight className="h-4 w-4" />
+                </Link>
+
+                {previousHref ? (
                   <Link
-                    href={
-                      previousPage.sort_order === 1
-                        ? `/funnel/${business.slug}/${funnel.slug}`
-                        : `/funnel/${business.slug}/${funnel.slug}/${previousPage.slug}`
-                    }
+                    href={previousHref}
                     className="inline-flex items-center gap-2 rounded-2xl border border-white/10 bg-black/40 px-5 py-3 text-sm font-bold text-white transition hover:border-yellow-400/40 hover:text-yellow-200"
                   >
                     <ArrowLeft className="h-4 w-4" />
@@ -268,6 +368,148 @@ export default async function FunnelStepPage({ params }: Props) {
             </div>
           ) : null}
         </article>
+
+        <section className="grid gap-6 lg:grid-cols-[1fr_0.8fr]">
+          <div className="rounded-3xl border border-yellow-400/20 bg-yellow-400/10 p-6 sm:p-8">
+            <div className="inline-flex items-center gap-2 rounded-full border border-yellow-400/20 bg-black/30 px-3 py-1 text-xs font-black uppercase tracking-wide text-yellow-200">
+              <Sparkles className="h-3.5 w-3.5" />
+              Funnel Conversion
+            </div>
+
+            <h2 className="mt-4 text-3xl font-black text-yellow-100">
+              Ready for the next step?
+            </h2>
+
+            <p className="mt-3 text-sm leading-7 text-yellow-100/75">
+              Submit your information below and this business will receive your
+              lead inside CreatorOS AI CRM, funnel submissions, and conversion
+              tracking.
+            </p>
+
+            <div className="mt-6 grid gap-3 sm:grid-cols-3">
+              <div className="rounded-2xl border border-yellow-400/20 bg-black/30 p-4">
+                <p className="text-xs font-bold uppercase tracking-wide text-yellow-100/60">
+                  Business
+                </p>
+                <p className="mt-2 text-sm font-black text-yellow-100">
+                  {business.name}
+                </p>
+              </div>
+
+              <div className="rounded-2xl border border-yellow-400/20 bg-black/30 p-4">
+                <p className="text-xs font-bold uppercase tracking-wide text-yellow-100/60">
+                  Funnel
+                </p>
+                <p className="mt-2 text-sm font-black text-yellow-100">
+                  {funnel.name}
+                </p>
+              </div>
+
+              <div className="rounded-2xl border border-yellow-400/20 bg-black/30 p-4">
+                <p className="text-xs font-bold uppercase tracking-wide text-yellow-100/60">
+                  Step
+                </p>
+                <p className="mt-2 text-sm font-black text-yellow-100">
+                  {currentPage.title}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <form
+            action="/api/funnel-submit"
+            method="post"
+            className="rounded-3xl border border-white/10 bg-white/[0.03] p-6 sm:p-8"
+          >
+            <input type="hidden" name="businessId" value={business.id} />
+            <input type="hidden" name="businessSlug" value={business.slug || ""} />
+            <input type="hidden" name="funnelId" value={funnel.id} />
+            <input type="hidden" name="funnelSlug" value={funnel.slug} />
+            <input type="hidden" name="funnelPageId" value={currentPage.id} />
+            <input type="hidden" name="pageSlug" value={currentPage.slug} />
+            <input type="hidden" name="leadFormId" value={leadForm?.id || ""} />
+            <input type="hidden" name="formSlug" value={leadForm?.slug || ""} />
+            <input type="hidden" name="pageUrl" value={pageUrl} />
+
+            <div className="mb-6">
+              <h2 className="text-2xl font-black">
+                {leadForm?.title || "Get Started"}
+              </h2>
+
+              <p className="mt-2 text-sm leading-6 text-zinc-400">
+                {leadForm?.description ||
+                  "Enter your details below and we will follow up with you."}
+              </p>
+            </div>
+
+            <div className="space-y-4">
+              <label className="block">
+                <span className="mb-2 flex items-center gap-2 text-sm font-bold text-zinc-300">
+                  <User className="h-4 w-4 text-yellow-200" />
+                  Name
+                </span>
+                <input
+                  name="name"
+                  type="text"
+                  required
+                  placeholder="Your name"
+                  className="w-full rounded-2xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white outline-none transition placeholder:text-zinc-600 focus:border-yellow-400/50"
+                />
+              </label>
+
+              <label className="block">
+                <span className="mb-2 flex items-center gap-2 text-sm font-bold text-zinc-300">
+                  <Mail className="h-4 w-4 text-yellow-200" />
+                  Email
+                </span>
+                <input
+                  name="email"
+                  type="email"
+                  required
+                  placeholder="you@email.com"
+                  className="w-full rounded-2xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white outline-none transition placeholder:text-zinc-600 focus:border-yellow-400/50"
+                />
+              </label>
+
+              <label className="block">
+                <span className="mb-2 flex items-center gap-2 text-sm font-bold text-zinc-300">
+                  <Phone className="h-4 w-4 text-yellow-200" />
+                  Phone
+                </span>
+                <input
+                  name="phone"
+                  type="tel"
+                  placeholder="Phone number"
+                  className="w-full rounded-2xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white outline-none transition placeholder:text-zinc-600 focus:border-yellow-400/50"
+                />
+              </label>
+
+              <label className="block">
+                <span className="mb-2 text-sm font-bold text-zinc-300">
+                  Message
+                </span>
+                <textarea
+                  name="message"
+                  rows={4}
+                  placeholder="Tell us what you are looking for..."
+                  className="w-full resize-none rounded-2xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white outline-none transition placeholder:text-zinc-600 focus:border-yellow-400/50"
+                />
+              </label>
+            </div>
+
+            <button
+              type="submit"
+              className="mt-6 inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-yellow-400 px-5 py-3 text-sm font-black text-black transition hover:bg-yellow-300"
+            >
+              {leadForm?.submit_button_text || "Submit"}
+              <ArrowRight className="h-4 w-4" />
+            </button>
+
+            <p className="mt-4 text-center text-xs leading-5 text-zinc-500">
+              Powered by CreatorOS AI lead capture.
+            </p>
+          </form>
+        </section>
 
         <footer className="border-t border-white/10 py-6 text-sm text-zinc-500">
           © {new Date().getFullYear()} {business.name}. Powered by CreatorOS AI.

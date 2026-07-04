@@ -40,10 +40,17 @@ type BusinessRow = {
 };
 
 type CreatedResource = {
-  type: "funnel" | "funnel_page";
+  type: "funnel" | "funnel_page" | "lead_form";
   id: string;
   label: string;
   href?: string;
+};
+
+type CreatedFunnelPage = {
+  id: string;
+  title: string;
+  slug: string;
+  page_type?: string | null;
 };
 
 function cleanString(value: unknown) {
@@ -123,7 +130,7 @@ function detectActions(prompt: string): CommandAction[] {
       label: "AI Funnel Builder",
       status: "planned",
       message:
-        "Create a conversion funnel with landing, offer, lead capture, and thank-you pages.",
+        "Create a conversion funnel with landing, offer, lead capture, thank-you pages, and a working lead form.",
     });
   }
 
@@ -262,7 +269,8 @@ function detectActions(prompt: string): CommandAction[] {
       type: "lead",
       label: "Lead / CRM System",
       status: "planned",
-      message: "Create a lead capture or CRM growth plan for this business.",
+      message:
+        "Create a lead capture or CRM growth plan for this business, including a funnel form when connected to a funnel.",
     });
   }
 
@@ -291,7 +299,8 @@ function detectActions(prompt: string): CommandAction[] {
         type: "funnel",
         label: "AI Funnel Builder",
         status: "planned",
-        message: "Create a simple funnel to turn visitors into leads or buyers.",
+        message:
+          "Create a simple funnel to turn visitors into leads or buyers.",
       },
       {
         type: "website",
@@ -314,7 +323,15 @@ function detectActions(prompt: string): CommandAction[] {
 function inferFunnelGoal(prompt: string) {
   const text = prompt.toLowerCase();
 
-  if (includesAny(text, ["book", "booking", "appointment", "call", "consultation"])) {
+  if (
+    includesAny(text, [
+      "book",
+      "booking",
+      "appointment",
+      "call",
+      "consultation",
+    ])
+  ) {
     return "Book more calls";
   }
 
@@ -356,6 +373,7 @@ function inferFunnelOffer(prompt: string, business: BusinessRow) {
   if (text.includes("service")) return "A high-value service offer";
   if (text.includes("course")) return "A course or digital education offer";
   if (text.includes("membership")) return "A recurring membership offer";
+
   if (text.includes("consultation") || text.includes("call")) {
     return "A consultation or booking offer";
   }
@@ -367,11 +385,133 @@ function inferFunnelOffer(prompt: string, business: BusinessRow) {
   return "Core business offer";
 }
 
+function inferLeadFormType(prompt: string) {
+  const text = prompt.toLowerCase();
+
+  if (
+    includesAny(text, [
+      "book",
+      "booking",
+      "appointment",
+      "call",
+      "consultation",
+    ])
+  ) {
+    return "booking_request";
+  }
+
+  if (includesAny(text, ["newsletter", "email list", "subscribe"])) {
+    return "newsletter";
+  }
+
+  if (includesAny(text, ["waitlist", "wait list", "early access"])) {
+    return "waitlist";
+  }
+
+  if (includesAny(text, ["quote", "estimate", "pricing request"])) {
+    return "quote_request";
+  }
+
+  if (includesAny(text, ["application", "apply", "applicant"])) {
+    return "application";
+  }
+
+  return "lead_capture";
+}
+
+function inferLeadFormTitle(prompt: string) {
+  const text = prompt.toLowerCase();
+
+  if (
+    includesAny(text, [
+      "book",
+      "booking",
+      "appointment",
+      "call",
+      "consultation",
+    ])
+  ) {
+    return "Book Your Call";
+  }
+
+  if (includesAny(text, ["quote", "estimate"])) {
+    return "Request a Quote";
+  }
+
+  if (includesAny(text, ["waitlist", "early access"])) {
+    return "Join the Waitlist";
+  }
+
+  if (includesAny(text, ["newsletter", "email list", "subscribe"])) {
+    return "Join the List";
+  }
+
+  if (includesAny(text, ["application", "apply"])) {
+    return "Apply Now";
+  }
+
+  return "Get Started";
+}
+
+function inferSubmitButtonText(prompt: string) {
+  const text = prompt.toLowerCase();
+
+  if (includesAny(text, ["book", "booking", "appointment", "call"])) {
+    return "Request My Call";
+  }
+
+  if (includesAny(text, ["quote", "estimate"])) {
+    return "Request Quote";
+  }
+
+  if (includesAny(text, ["waitlist", "early access"])) {
+    return "Join Waitlist";
+  }
+
+  if (includesAny(text, ["newsletter", "email list", "subscribe"])) {
+    return "Subscribe";
+  }
+
+  if (includesAny(text, ["application", "apply"])) {
+    return "Submit Application";
+  }
+
+  return "Submit Info";
+}
+
 async function createUniqueFunnelSlug(businessId: string, name: string) {
   const baseSlug = slugify(name) || "ai-funnel";
 
   const { data, error } = await supabaseAdmin
     .from("funnels")
+    .select("id, slug")
+    .eq("business_id", businessId)
+    .ilike("slug", `${baseSlug}%`);
+
+  if (error) throw error;
+
+  const existingSlugs = new Set((data ?? []).map((item) => item.slug));
+
+  if (!existingSlugs.has(baseSlug)) {
+    return baseSlug;
+  }
+
+  for (let index = 2; index <= 50; index += 1) {
+    const candidate = `${baseSlug}-${index}`;
+
+    if (!existingSlugs.has(candidate)) {
+      return candidate;
+    }
+  }
+
+  return `${baseSlug}-${Date.now()}`;
+}
+
+async function createUniqueLeadFormSlug(businessId: string, name: string) {
+  const baseSlug = slugify(name) || "lead-form";
+
+  const { data, error } = await supabaseAdmin
+    .from("lead_forms")
     .select("id, slug")
     .eq("business_id", businessId)
     .ilike("slug", `${baseSlug}%`);
@@ -454,6 +594,7 @@ function buildStarterFunnelPages(options: {
 
   const funnelBaseHref = `/funnel/${businessSlug}/${funnelSlug}`;
   const offerHref = `${funnelBaseHref}/offer`;
+  const leadCaptureHref = `${funnelBaseHref}/lead-capture`;
   const thankYouHref = `${funnelBaseHref}/thank-you`;
   const storefrontHref = business.slug ? `/storefront/${business.slug}` : null;
 
@@ -461,6 +602,7 @@ function buildStarterFunnelPages(options: {
     {
       title: "Landing Page",
       slug: "landing",
+      type: "landing",
       page_type: "landing",
       headline: `${businessName} is ready to help ${audience}.`,
       subheadline: `A focused funnel built to ${goal.toLowerCase()} with a clear message, strong offer, and simple next step.`,
@@ -476,17 +618,21 @@ function buildStarterFunnelPages(options: {
         ctaUrl: offerHref,
       }),
       sort_order: 1,
+      status: "draft",
       is_published: false,
     },
     {
       title: "Offer Page",
       slug: "offer",
+      type: "offer",
       page_type: "offer",
       headline: `Turn interest into action with ${offer}.`,
-      subheadline: `Position the offer, explain the value, remove confusion, and guide visitors toward the next conversion step.`,
-      body: `This page should explain the offer, benefits, proof, pricing direction, and why the visitor should act now. Use it as the main conversion page inside this funnel.`,
-      cta_text: storefrontHref ? "Go To Storefront" : "Continue",
-      cta_url: storefrontHref || thankYouHref,
+      subheadline:
+        "Position the offer, explain the value, remove confusion, and guide visitors toward the next conversion step.",
+      body:
+        "This page should explain the offer, benefits, proof, pricing direction, and why the visitor should act now. Use it as the main conversion page inside this funnel.",
+      cta_text: "Get Started",
+      cta_url: leadCaptureHref,
       html_content: buildPageHtml({
         eyebrow: "Offer Page",
         headline: `Turn interest into action with ${offer}.`,
@@ -494,22 +640,51 @@ function buildStarterFunnelPages(options: {
           "Position the offer, explain the value, remove confusion, and guide visitors toward the next conversion step.",
         body:
           "This page should explain the offer, benefits, proof, pricing direction, and why the visitor should act now. Use it as the main conversion page inside this funnel.",
-        ctaText: storefrontHref ? "Go To Storefront" : "Continue",
-        ctaUrl: storefrontHref || thankYouHref,
+        ctaText: "Get Started",
+        ctaUrl: leadCaptureHref,
       }),
       sort_order: 2,
+      status: "draft",
+      is_published: false,
+    },
+    {
+      title: "Lead Capture Page",
+      slug: "lead-capture",
+      type: "lead_capture",
+      page_type: "lead_capture",
+      headline: "Tell us where to send the next step.",
+      subheadline:
+        "Submit your information and this business will follow up with you.",
+      body:
+        "This page connects the public funnel to CreatorOS AI CRM, funnel submissions, and conversion tracking.",
+      cta_text: "Submit Info",
+      cta_url: thankYouHref,
+      html_content: buildPageHtml({
+        eyebrow: "Lead Capture",
+        headline: "Tell us where to send the next step.",
+        subheadline:
+          "Submit your information and this business will follow up with you.",
+        body:
+          "This page connects the public funnel to CreatorOS AI CRM, funnel submissions, and conversion tracking.",
+        ctaText: "Submit Info",
+        ctaUrl: thankYouHref,
+      }),
+      sort_order: 3,
+      status: "draft",
       is_published: false,
     },
     {
       title: "Thank You Page",
       slug: "thank-you",
+      type: "thank_you",
       page_type: "thank_you",
       headline: "You are all set.",
       subheadline:
         "Confirm the action, explain what happens next, and keep the customer moving through the journey.",
-      body: `This page can be used after a lead submits, a customer buys, or someone books a call. It should confirm the next step and keep trust high.`,
-      cta_text: "Back To Business",
-      cta_url: business.slug ? `/site/${business.slug}` : "/dashboard",
+      body:
+        "This page can be used after a lead submits, a customer buys, or someone books a call. It should confirm the next step and keep trust high.",
+      cta_text: storefrontHref ? "Back To Storefront" : "Back To Business",
+      cta_url: storefrontHref || (business.slug ? `/site/${business.slug}` : "/dashboard"),
       html_content: buildPageHtml({
         eyebrow: "Thank You",
         headline: "You are all set.",
@@ -517,11 +692,123 @@ function buildStarterFunnelPages(options: {
           "Confirm the action, explain what happens next, and keep the customer moving through the journey.",
         body:
           "This page can be used after a lead submits, a customer buys, or someone books a call. It should confirm the next step and keep trust high.",
-        ctaText: "Back To Business",
-        ctaUrl: business.slug ? `/site/${business.slug}` : "/dashboard",
+        ctaText: storefrontHref ? "Back To Storefront" : "Back To Business",
+        ctaUrl:
+          storefrontHref || (business.slug ? `/site/${business.slug}` : "/dashboard"),
       }),
-      sort_order: 3,
+      sort_order: 4,
+      status: "draft",
       is_published: false,
+    },
+  ];
+}
+
+function buildLeadFormFields(formType: string) {
+  if (formType === "booking_request") {
+    return [
+      {
+        name: "name",
+        label: "Name",
+        type: "text",
+        required: true,
+      },
+      {
+        name: "email",
+        label: "Email",
+        type: "email",
+        required: true,
+      },
+      {
+        name: "phone",
+        label: "Phone",
+        type: "tel",
+        required: true,
+      },
+      {
+        name: "message",
+        label: "What do you need help with?",
+        type: "textarea",
+        required: false,
+      },
+    ];
+  }
+
+  if (formType === "newsletter" || formType === "waitlist") {
+    return [
+      {
+        name: "name",
+        label: "Name",
+        type: "text",
+        required: false,
+      },
+      {
+        name: "email",
+        label: "Email",
+        type: "email",
+        required: true,
+      },
+    ];
+  }
+
+  if (formType === "quote_request" || formType === "application") {
+    return [
+      {
+        name: "name",
+        label: "Name",
+        type: "text",
+        required: true,
+      },
+      {
+        name: "email",
+        label: "Email",
+        type: "email",
+        required: true,
+      },
+      {
+        name: "phone",
+        label: "Phone",
+        type: "tel",
+        required: false,
+      },
+      {
+        name: "company",
+        label: "Company",
+        type: "text",
+        required: false,
+      },
+      {
+        name: "message",
+        label: "Tell us more",
+        type: "textarea",
+        required: true,
+      },
+    ];
+  }
+
+  return [
+    {
+      name: "name",
+      label: "Name",
+      type: "text",
+      required: true,
+    },
+    {
+      name: "email",
+      label: "Email",
+      type: "email",
+      required: true,
+    },
+    {
+      name: "phone",
+      label: "Phone",
+      type: "tel",
+      required: false,
+    },
+    {
+      name: "message",
+      label: "Message",
+      type: "textarea",
+      required: false,
     },
   ];
 }
@@ -549,6 +836,12 @@ async function executeFunnelCommand(options: {
       offer,
       status: "draft",
       is_published: false,
+      metadata: {
+        generatedBy: "command_center",
+        prompt,
+        goal,
+        offer,
+      },
     })
     .select("id, name, slug")
     .single();
@@ -568,14 +861,70 @@ async function executeFunnelCommand(options: {
     funnel_id: funnel.id,
     business_id: business.id,
     ...page,
+    seo_title: `${page.title} | ${funnelName}`,
+    seo_description: page.subheadline,
+    content: {
+      generatedBy: "command_center",
+      funnelName,
+      pageType: page.page_type,
+    },
   }));
 
   const { data: pages, error: pagesError } = await supabaseAdmin
     .from("funnel_pages")
     .insert(pagesToInsert)
-    .select("id, title, slug");
+    .select("id, title, slug, page_type");
 
   if (pagesError) throw pagesError;
+
+  const createdPages = (pages ?? []) as CreatedFunnelPage[];
+  const leadCapturePage =
+    createdPages.find((page) => page.slug === "lead-capture") ??
+    createdPages.find((page) => page.page_type === "lead_capture") ??
+    null;
+
+  const formType = inferLeadFormType(prompt);
+  const formTitle = inferLeadFormTitle(prompt);
+  const submitButtonText = inferSubmitButtonText(prompt);
+  const leadFormSlug = await createUniqueLeadFormSlug(
+    business.id,
+    `${funnelName} ${formTitle}`
+  );
+
+  const { data: leadForm, error: leadFormError } = await supabaseAdmin
+    .from("lead_forms")
+    .insert({
+      business_id: business.id,
+      funnel_id: funnel.id,
+      funnel_page_id: leadCapturePage?.id || null,
+      name: `${funnelName} Lead Form`,
+      slug: leadFormSlug,
+      title: formTitle,
+      description:
+        "Submit your information and this business will follow up with you.",
+      submit_button_text: submitButtonText,
+      form_type: formType,
+      status: "published",
+      fields: buildLeadFormFields(formType),
+      success_message: "Thanks! We received your information.",
+      redirect_url: business.slug
+        ? `/funnel/${business.slug}/${funnel.slug}/thank-you`
+        : null,
+      ai_prompt: prompt,
+      metadata: {
+        generatedBy: "command_center",
+        funnelName,
+        funnelSlug,
+        goal,
+        offer,
+      },
+      is_active: true,
+      is_published: true,
+    })
+    .select("id, name, slug, title")
+    .single();
+
+  if (leadFormError) throw leadFormError;
 
   const funnelHref = `/dashboard/business/${business.id}/funnels`;
   const publicHref = business.slug
@@ -589,19 +938,28 @@ async function executeFunnelCommand(options: {
       label: funnel.name,
       href: publicHref,
     },
-    ...((pages ?? []).map((page) => ({
+    ...createdPages.map((page) => ({
       type: "funnel_page" as const,
       id: page.id,
       label: page.title,
       href: business.slug
-        ? `/funnel/${business.slug}/${funnel.slug}/${page.slug}`
+        ? page.slug === "landing"
+          ? `/funnel/${business.slug}/${funnel.slug}`
+          : `/funnel/${business.slug}/${funnel.slug}/${page.slug}`
         : funnelHref,
-    })) ?? []),
+    })),
+    {
+      type: "lead_form",
+      id: leadForm.id,
+      label: leadForm.title || leadForm.name,
+      href: publicHref,
+    },
   ];
 
   return {
     funnel,
-    pages: pages ?? [],
+    pages: createdPages,
+    leadForm,
     href: funnelHref,
     publicHref,
     resources,
@@ -643,7 +1001,7 @@ async function executeActions(options: {
       updatedActions.push({
         ...action,
         status: "completed",
-        message: `Created ${funnelExecution.funnel.name} with ${funnelExecution.pages.length} starter funnel pages.`,
+        message: `Created ${funnelExecution.funnel.name} with ${funnelExecution.pages.length} starter pages and a published lead capture form.`,
         href: funnelExecution.href,
         resourceId: funnelExecution.funnel.id,
       });
@@ -676,6 +1034,10 @@ function buildResult(options: {
     (resource) => resource.type === "funnel"
   );
 
+  const createdLeadForms = createdResources.filter(
+    (resource) => resource.type === "lead_form"
+  );
+
   const hasFunnelAction = actions.some((action) => action.type === "funnel");
 
   return {
@@ -686,9 +1048,11 @@ function buildResult(options: {
     prompt,
     recommendedNextMove:
       mode === "execute" && createdFunnels.length > 0
-        ? "Open the AI Funnel Builder, review the generated funnel pages, edit the copy, then publish when ready."
+        ? createdLeadForms.length > 0
+          ? "Open the AI Funnel Builder, review the generated funnel pages, test the lead form, then publish the funnel pages when ready."
+          : "Open the AI Funnel Builder, review the generated funnel pages, edit the copy, then publish when ready."
         : hasFunnelAction
-          ? "Review the funnel plan, then open the AI Funnel Builder to create or edit the sales funnel."
+          ? "Review the funnel plan, then open the AI Funnel Builder to create or edit the sales funnel and lead form."
           : "Review the plan, then use the Website Builder, Product Manager, Marketing Center, Automations, and AI Employees tools to execute it.",
     actions,
     createdResources,
@@ -796,6 +1160,9 @@ export async function POST(request: NextRequest) {
         actionCount: execution.actions.length,
         commandRunId: commandRun.id,
         createdResources: execution.createdResources,
+        createdLeadForms: execution.createdResources.filter(
+          (resource) => resource.type === "lead_form"
+        ).length,
       },
     });
 
