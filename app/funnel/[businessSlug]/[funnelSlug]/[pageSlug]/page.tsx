@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import {
+  AlertCircle,
   ArrowLeft,
   ArrowRight,
   CheckCircle2,
@@ -19,6 +20,11 @@ type Props = {
     businessSlug: string;
     funnelSlug: string;
     pageSlug: string;
+  }>;
+  searchParams?: Promise<{
+    submitted?: string;
+    error?: string;
+    message?: string;
   }>;
 };
 
@@ -80,6 +86,11 @@ type LeadForm = {
   is_active: boolean | null;
   is_published: boolean | null;
 };
+
+function cleanMessage(value: string | undefined) {
+  if (!value) return "";
+  return value.trim().slice(0, 180);
+}
 
 async function trackPageView(options: {
   businessId: string;
@@ -198,8 +209,13 @@ export async function generateMetadata({ params }: Props) {
   };
 }
 
-export default async function FunnelStepPage({ params }: Props) {
+export default async function FunnelStepPage({
+  params,
+  searchParams,
+}: Props) {
   const { businessSlug, funnelSlug, pageSlug } = await params;
+  const resolvedSearchParams = searchParams ? await searchParams : {};
+
   const data = await loadFunnelPage(businessSlug, funnelSlug, pageSlug);
 
   if (!data) notFound();
@@ -214,9 +230,7 @@ export default async function FunnelStepPage({ params }: Props) {
     leadForm,
   } = data;
 
-  const pageType =
-    currentPage.page_type || currentPage.type || "funnel_step";
-
+  const pageType = currentPage.page_type || currentPage.type || "funnel_step";
   const pageUrl = `/funnel/${business.slug}/${funnel.slug}/${currentPage.slug}`;
 
   await trackPageView({
@@ -226,6 +240,16 @@ export default async function FunnelStepPage({ params }: Props) {
     leadFormId: leadForm?.id || null,
     pageUrl,
   });
+
+  const submitted = resolvedSearchParams.submitted === "1";
+  const hasError = resolvedSearchParams.error === "1";
+  const alertMessage =
+    cleanMessage(resolvedSearchParams.message) ||
+    (submitted
+      ? leadForm?.success_message || "Thanks! We received your information."
+      : hasError
+        ? "Unable to submit the form. Please try again."
+        : "");
 
   const nextHref = nextPage
     ? `/funnel/${business.slug}/${funnel.slug}/${nextPage.slug}`
@@ -280,6 +304,34 @@ export default async function FunnelStepPage({ params }: Props) {
             })}
           </nav>
         </header>
+
+        {submitted || hasError ? (
+          <div
+            className={
+              submitted
+                ? "rounded-3xl border border-emerald-400/20 bg-emerald-400/10 p-5 text-emerald-100"
+                : "rounded-3xl border border-red-400/20 bg-red-400/10 p-5 text-red-100"
+            }
+          >
+            <div className="flex items-start gap-3">
+              {submitted ? (
+                <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-emerald-300" />
+              ) : (
+                <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-red-300" />
+              )}
+
+              <div>
+                <h2 className="font-black">
+                  {submitted ? "Submission received" : "Submission error"}
+                </h2>
+
+                <p className="mt-1 text-sm leading-6 opacity-80">
+                  {alertMessage}
+                </p>
+              </div>
+            </div>
+          </div>
+        ) : null}
 
         <div className="grid gap-2 sm:grid-cols-4">
           {pages.map((page) => (
@@ -422,7 +474,11 @@ export default async function FunnelStepPage({ params }: Props) {
             className="rounded-3xl border border-white/10 bg-white/[0.03] p-6 sm:p-8"
           >
             <input type="hidden" name="businessId" value={business.id} />
-            <input type="hidden" name="businessSlug" value={business.slug || ""} />
+            <input
+              type="hidden"
+              name="businessSlug"
+              value={business.slug || ""}
+            />
             <input type="hidden" name="funnelId" value={funnel.id} />
             <input type="hidden" name="funnelSlug" value={funnel.slug} />
             <input type="hidden" name="funnelPageId" value={currentPage.id} />

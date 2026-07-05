@@ -5,12 +5,18 @@ import {
   Bot,
   CalendarClock,
   CheckCircle2,
+  Clock,
   Loader2,
+  Mail,
   Plus,
   Power,
+  RefreshCcw,
   Search,
+  Send,
+  ShieldCheck,
   Trash2,
   Wand2,
+  XCircle,
   Zap,
 } from "lucide-react";
 
@@ -20,15 +26,63 @@ type AutomationType = "sales" | "marketing" | "support" | "operations";
 type Automation = {
   id: string;
   business_id: string;
-  name: string | null;
+  name?: string | null;
+  title?: string | null;
   description?: string | null;
   type?: AutomationType | string | null;
-  status: string | null;
+  status?: string | null;
   trigger: string | null;
   action: string | null;
   runs_count?: number | null;
+  is_active?: boolean | null;
   metadata: Record<string, unknown> | null;
   created_at: string;
+};
+
+type AutomationEventStatus =
+  | "pending"
+  | "processing"
+  | "sent"
+  | "failed"
+  | "cancelled";
+
+type AutomationEvent = {
+  id: string;
+  business_id: string;
+
+  funnel_id: string | null;
+  funnel_page_id: string | null;
+  lead_form_id: string | null;
+  funnel_submission_id: string | null;
+  lead_id: string | null;
+
+  event_type:
+    | "funnel_lead_submitted"
+    | "lead_follow_up"
+    | "booking_request_follow_up"
+    | "customer_thank_you"
+    | "internal_notification"
+    | "custom";
+
+  status: AutomationEventStatus;
+
+  recipient_email: string | null;
+  recipient_phone: string | null;
+  recipient_name: string | null;
+
+  subject: string | null;
+  message: string | null;
+
+  scheduled_for: string | null;
+  sent_at: string | null;
+
+  attempts: number | null;
+  last_error: string | null;
+
+  metadata: Record<string, unknown> | null;
+
+  created_at: string;
+  updated_at: string | null;
 };
 
 type Template = {
@@ -40,6 +94,7 @@ type Template = {
 type Props = {
   businessId: string;
   initialAutomations?: Automation[];
+  initialAutomationEvents?: AutomationEvent[];
   templates?: Template[];
 };
 
@@ -72,26 +127,75 @@ const defaultTemplates: Template[] = [
 ];
 
 function normalizeAutomation(row: Automation): Automation {
+  const status = row.status || (row.is_active === false ? "paused" : "active");
+  const title = row.name || row.title || "Untitled Automation";
+
   return {
     ...row,
-    name: row.name || "Untitled Automation",
+    name: title,
+    title,
     description: row.description ?? null,
     type: row.type || "sales",
-    status: row.status || "active",
+    status,
     trigger: row.trigger || null,
     action: row.action || null,
     runs_count: row.runs_count ?? 0,
+    is_active: status === "active",
     metadata: row.metadata ?? {},
   };
+}
+
+function normalizeAutomationEvent(row: AutomationEvent): AutomationEvent {
+  return {
+    ...row,
+    status: row.status || "pending",
+    attempts: row.attempts ?? 0,
+    metadata: row.metadata ?? {},
+  };
+}
+
+function formatEventType(value: string) {
+  return value.replaceAll("_", " ");
+}
+
+function formatDate(value: string | null) {
+  if (!value) return "Not scheduled";
+
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  }).format(new Date(value));
+}
+
+function getEventStatusClass(status: AutomationEventStatus) {
+  if (status === "sent") {
+    return "border-emerald-400/20 bg-emerald-400/10 text-emerald-300";
+  }
+
+  if (status === "pending" || status === "processing") {
+    return "border-yellow-400/20 bg-yellow-400/10 text-yellow-200";
+  }
+
+  if (status === "failed") {
+    return "border-red-400/20 bg-red-400/10 text-red-300";
+  }
+
+  return "border-white/10 bg-white/[0.04] text-zinc-400";
 }
 
 export default function AutomationsClient({
   businessId,
   initialAutomations = [],
+  initialAutomationEvents = [],
   templates = defaultTemplates,
 }: Props) {
   const [automations, setAutomations] = useState<Automation[]>(
     initialAutomations.map(normalizeAutomation)
+  );
+
+  const [automationEvents, setAutomationEvents] = useState<AutomationEvent[]>(
+    initialAutomationEvents.map(normalizeAutomationEvent)
   );
 
   const [name, setName] = useState("");
@@ -100,9 +204,13 @@ export default function AutomationsClient({
   const [trigger, setTrigger] = useState("");
   const [action, setAction] = useState("");
   const [query, setQuery] = useState("");
+  const [eventQuery, setEventQuery] = useState("");
 
+  const [automationSecret, setAutomationSecret] = useState("");
   const [saving, setSaving] = useState(false);
+  const [processing, setProcessing] = useState(false);
   const [busyId, setBusyId] = useState("");
+  const [eventBusyId, setEventBusyId] = useState("");
   const [success, setSuccess] = useState("");
   const [error, setError] = useState("");
 
@@ -114,6 +222,21 @@ export default function AutomationsClient({
   const pausedCount = useMemo(
     () => automations.filter((item) => item.status === "paused").length,
     [automations]
+  );
+
+  const pendingEvents = useMemo(
+    () => automationEvents.filter((event) => event.status === "pending"),
+    [automationEvents]
+  );
+
+  const sentEvents = useMemo(
+    () => automationEvents.filter((event) => event.status === "sent"),
+    [automationEvents]
+  );
+
+  const failedEvents = useMemo(
+    () => automationEvents.filter((event) => event.status === "failed"),
+    [automationEvents]
   );
 
   const filteredAutomations = useMemo(() => {
@@ -129,6 +252,21 @@ export default function AutomationsClient({
       );
     });
   }, [automations, query]);
+
+  const filteredAutomationEvents = useMemo(() => {
+    const search = eventQuery.toLowerCase();
+
+    return automationEvents.filter((event) => {
+      return (
+        event.event_type.toLowerCase().includes(search) ||
+        event.status.toLowerCase().includes(search) ||
+        (event.recipient_email ?? "").toLowerCase().includes(search) ||
+        (event.recipient_name ?? "").toLowerCase().includes(search) ||
+        (event.subject ?? "").toLowerCase().includes(search) ||
+        (event.message ?? "").toLowerCase().includes(search)
+      );
+    });
+  }, [automationEvents, eventQuery]);
 
   async function refreshAutomations() {
     try {
@@ -165,6 +303,157 @@ export default function AutomationsClient({
     }
   }
 
+  async function refreshAutomationEvents() {
+    try {
+      setError("");
+      setSuccess("");
+      setEventBusyId("refresh-events");
+
+      const res = await fetch(
+        `/api/automation-events?businessId=${businessId}&limit=100`,
+        {
+          cache: "no-store",
+        }
+      );
+
+      const data = await res.json().catch(() => null);
+
+      if (!res.ok || !data?.success) {
+        throw new Error(data?.error || "Failed to load automation events.");
+      }
+
+      setAutomationEvents(
+        Array.isArray(data.events)
+          ? data.events.map(normalizeAutomationEvent)
+          : []
+      );
+
+      setSuccess("Automation queue refreshed.");
+    } catch (refreshError) {
+      console.error(refreshError);
+      setError(
+        refreshError instanceof Error
+          ? refreshError.message
+          : "Unable to refresh automation events."
+      );
+    } finally {
+      setEventBusyId("");
+    }
+  }
+
+  async function processAutomationEvents() {
+    if (!automationSecret.trim()) {
+      setError("Enter your AUTOMATION_SECRET to process pending automations.");
+      return;
+    }
+
+    try {
+      setProcessing(true);
+      setError("");
+      setSuccess("");
+
+      const res = await fetch(
+        `/api/automation-events/process?limit=10&secret=${encodeURIComponent(
+          automationSecret.trim()
+        )}`,
+        {
+          method: "POST",
+        }
+      );
+
+      const data = await res.json().catch(() => null);
+
+      if (!res.ok || !data?.success) {
+        throw new Error(data?.error || "Unable to process automation events.");
+      }
+
+      await refreshAutomationEvents();
+
+      const sent = Number(data.totals?.sent ?? 0);
+      const failed = Number(data.totals?.failed ?? 0);
+      const skipped = Number(data.totals?.skipped ?? 0);
+
+      setSuccess(
+        `Processed automations. Sent: ${sent}. Failed: ${failed}. Skipped: ${skipped}.`
+      );
+    } catch (processError) {
+      console.error(processError);
+      setError(
+        processError instanceof Error
+          ? processError.message
+          : "Unable to process automation events."
+      );
+    } finally {
+      setProcessing(false);
+    }
+  }
+
+  async function updateAutomationEvent(
+    event: AutomationEvent,
+    updates: Partial<AutomationEvent>
+  ) {
+    try {
+      setEventBusyId(event.id);
+      setError("");
+      setSuccess("");
+
+      const res = await fetch("/api/automation-events", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          id: event.id,
+          ...updates,
+        }),
+      });
+
+      const data = await res.json().catch(() => null);
+
+      if (!res.ok || !data?.success) {
+        throw new Error(data?.error || "Unable to update automation event.");
+      }
+
+      setAutomationEvents((current) =>
+        current.map((item) =>
+          item.id === event.id ? normalizeAutomationEvent(data.event) : item
+        )
+      );
+
+      setSuccess("Automation event updated.");
+    } catch (updateError) {
+      console.error(updateError);
+      setError(
+        updateError instanceof Error
+          ? updateError.message
+          : "Unable to update automation event."
+      );
+    } finally {
+      setEventBusyId("");
+    }
+  }
+
+  async function retryAutomationEvent(event: AutomationEvent) {
+    await updateAutomationEvent(event, {
+      status: "pending",
+      last_error: null,
+    });
+  }
+
+  async function markAutomationEventSent(event: AutomationEvent) {
+    await updateAutomationEvent(event, {
+      status: "sent",
+      sent_at: new Date().toISOString(),
+      last_error: null,
+    });
+  }
+
+  async function cancelAutomationEvent(event: AutomationEvent) {
+    await updateAutomationEvent(event, {
+      status: "cancelled",
+    });
+  }
+
   async function createAutomation(template?: Template) {
     const nextName = template?.title ?? name;
     const nextTrigger = template?.trigger ?? trigger;
@@ -190,11 +479,13 @@ export default function AutomationsClient({
           businessId,
           business_id: businessId,
           name: nextName.trim(),
+          title: nextName.trim(),
           type,
           description: nextDescription.trim(),
           trigger: nextTrigger.trim(),
           action: nextAction.trim(),
           status: "active",
+          is_active: true,
         }),
       });
 
@@ -247,6 +538,7 @@ export default function AutomationsClient({
           businessId,
           business_id: businessId,
           status: nextStatus,
+          is_active: nextStatus === "active",
         }),
       });
 
@@ -326,7 +618,7 @@ export default function AutomationsClient({
         </div>
       ) : null}
 
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
         <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
           <p className="text-xs text-zinc-500">Active</p>
           <p className="mt-2 text-3xl font-black text-emerald-300">
@@ -340,8 +632,86 @@ export default function AutomationsClient({
             {pausedCount}
           </p>
         </div>
+
+        <div className="rounded-3xl border border-yellow-400/20 bg-yellow-400/10 p-5">
+          <p className="text-xs text-yellow-100/60">Pending Queue</p>
+          <p className="mt-2 text-3xl font-black text-yellow-100">
+            {pendingEvents.length}
+          </p>
+        </div>
+
+        <div className="rounded-3xl border border-emerald-400/20 bg-emerald-400/10 p-5">
+          <p className="text-xs text-emerald-100/60">Sent</p>
+          <p className="mt-2 text-3xl font-black text-emerald-100">
+            {sentEvents.length}
+          </p>
+        </div>
+
+        <div className="rounded-3xl border border-red-400/20 bg-red-400/10 p-5">
+          <p className="text-xs text-red-100/60">Failed</p>
+          <p className="mt-2 text-3xl font-black text-red-100">
+            {failedEvents.length}
+          </p>
+        </div>
       </div>
 
+      <div className="rounded-3xl border border-yellow-400/20 bg-yellow-400/10 p-5 sm:p-6">
+        <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <div className="inline-flex items-center gap-2 rounded-full border border-yellow-400/20 bg-black/30 px-3 py-1 text-xs font-black uppercase tracking-wide text-yellow-200">
+              <Send className="h-3.5 w-3.5" />
+              Manual Processor
+            </div>
+
+            <h2 className="mt-4 text-2xl font-black text-yellow-100">
+              Process Pending Automations
+            </h2>
+
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-yellow-100/70">
+              Use this while testing before adding Vercel cron. Enter the same
+              secret from your AUTOMATION_SECRET environment variable.
+            </p>
+          </div>
+
+          <div className="flex w-full flex-col gap-3 sm:flex-row lg:w-auto">
+            <input
+              value={automationSecret}
+              onChange={(event) => setAutomationSecret(event.target.value)}
+              type="password"
+              placeholder="AUTOMATION_SECRET"
+              className="w-full rounded-2xl border border-yellow-400/20 bg-black/40 px-4 py-3 text-sm text-white outline-none placeholder:text-yellow-100/30 focus:border-yellow-400/50 lg:w-72"
+            />
+
+            <button
+              type="button"
+              onClick={processAutomationEvents}
+              disabled={processing}
+              className="inline-flex items-center justify-center gap-2 rounded-2xl bg-yellow-400 px-5 py-3 text-sm font-black text-black transition hover:bg-yellow-300 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {processing ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <ShieldCheck className="h-4 w-4" />
+              )}
+              Process Now
+            </button>
+
+            <button
+              type="button"
+              onClick={refreshAutomationEvents}
+              disabled={eventBusyId === "refresh-events"}
+              className="inline-flex items-center justify-center gap-2 rounded-2xl border border-yellow-400/20 bg-black/30 px-5 py-3 text-sm font-bold text-yellow-100 transition hover:bg-yellow-400/10 disabled:opacity-60"
+            >
+              {eventBusyId === "refresh-events" ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <RefreshCcw className="h-4 w-4" />
+              )}
+              Refresh Queue
+            </button>
+          </div>
+        </div>
+      </div>
       <div className="grid gap-6 lg:grid-cols-[0.95fr_1.45fr]">
         <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5 sm:p-6">
           <div className="flex items-center gap-3">
@@ -583,6 +953,183 @@ export default function AutomationsClient({
               )}
             </div>
           </div>
+        </div>
+      </div>
+
+      <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5 sm:p-6">
+        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+          <div>
+            <h2 className="text-lg font-bold">Automation Event Queue</h2>
+            <p className="text-sm text-zinc-500">
+              View, retry, cancel, and mark pending funnel follow-ups.
+            </p>
+          </div>
+
+          <div className="flex flex-col gap-3 sm:flex-row">
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
+              <input
+                value={eventQuery}
+                onChange={(event) => setEventQuery(event.target.value)}
+                placeholder="Search events..."
+                className="w-full rounded-2xl border border-white/10 bg-black/40 py-3 pl-11 pr-4 text-sm text-white outline-none placeholder:text-zinc-600 focus:border-yellow-400/40 md:w-60"
+              />
+            </div>
+
+            <button
+              type="button"
+              onClick={refreshAutomationEvents}
+              disabled={eventBusyId === "refresh-events"}
+              className="inline-flex items-center justify-center gap-2 rounded-2xl border border-white/10 bg-black/40 px-4 py-3 text-sm font-bold text-white transition hover:border-yellow-400/40 hover:text-yellow-200 disabled:opacity-60"
+            >
+              {eventBusyId === "refresh-events" ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <RefreshCcw className="h-4 w-4" />
+              )}
+              Refresh
+            </button>
+          </div>
+        </div>
+
+        <div className="mt-5 space-y-3">
+          {filteredAutomationEvents.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-white/10 bg-black/30 p-8 text-center">
+              <Clock className="mx-auto h-8 w-8 text-zinc-600" />
+              <h3 className="mt-4 font-bold">No automation events found</h3>
+              <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-zinc-500">
+                Submit a funnel form to create pending follow-up and internal
+                notification events.
+              </p>
+            </div>
+          ) : (
+            filteredAutomationEvents.map((event) => {
+              const isBusy = eventBusyId === event.id;
+
+              return (
+                <div
+                  key={event.id}
+                  className="rounded-2xl border border-white/10 bg-black/40 p-4"
+                >
+                  <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h3 className="font-bold">
+                          {event.subject || "Automation Event"}
+                        </h3>
+
+                        <span
+                          className={`rounded-full border px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide ${getEventStatusClass(
+                            event.status
+                          )}`}
+                        >
+                          {event.status}
+                        </span>
+
+                        <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide text-zinc-400">
+                          {formatEventType(event.event_type)}
+                        </span>
+                      </div>
+
+                      <div className="mt-3 flex flex-wrap gap-2 text-xs text-zinc-400">
+                        {event.recipient_email ? (
+                          <span className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2">
+                            <Mail className="h-4 w-4 text-yellow-200" />
+                            {event.recipient_email}
+                          </span>
+                        ) : null}
+
+                        {event.recipient_name ? (
+                          <span className="rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2">
+                            {event.recipient_name}
+                          </span>
+                        ) : null}
+
+                        <span className="rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2">
+                          Scheduled {formatDate(event.scheduled_for)}
+                        </span>
+
+                        <span className="rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2">
+                          Attempts {event.attempts ?? 0}
+                        </span>
+                      </div>
+
+                      {event.message ? (
+                        <p className="mt-3 line-clamp-3 text-sm leading-6 text-zinc-400">
+                          {event.message}
+                        </p>
+                      ) : null}
+
+                      {event.last_error ? (
+                        <div className="mt-3 rounded-xl border border-red-400/20 bg-red-400/10 p-3 text-sm leading-6 text-red-300">
+                          <span className="font-black">Error:</span>{" "}
+                          {event.last_error}
+                        </div>
+                      ) : null}
+
+                      {event.sent_at ? (
+                        <p className="mt-3 text-xs text-emerald-300">
+                          Sent {formatDate(event.sent_at)}
+                        </p>
+                      ) : null}
+                    </div>
+
+                    <div className="flex shrink-0 flex-wrap gap-2 lg:flex-col">
+                      {event.status === "failed" ||
+                      event.status === "cancelled" ? (
+                        <button
+                          type="button"
+                          onClick={() => retryAutomationEvent(event)}
+                          disabled={isBusy}
+                          className="inline-flex items-center justify-center gap-2 rounded-xl border border-yellow-400/20 bg-yellow-400/10 px-3 py-2 text-xs font-bold text-yellow-200 transition hover:bg-yellow-400/20 disabled:opacity-60"
+                        >
+                          {isBusy ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <RefreshCcw className="h-4 w-4" />
+                          )}
+                          Retry
+                        </button>
+                      ) : null}
+
+                      {event.status !== "sent" ? (
+                        <button
+                          type="button"
+                          onClick={() => markAutomationEventSent(event)}
+                          disabled={isBusy}
+                          className="inline-flex items-center justify-center gap-2 rounded-xl border border-emerald-400/20 bg-emerald-400/10 px-3 py-2 text-xs font-bold text-emerald-300 transition hover:bg-emerald-400/20 disabled:opacity-60"
+                        >
+                          {isBusy ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <CheckCircle2 className="h-4 w-4" />
+                          )}
+                          Mark Sent
+                        </button>
+                      ) : null}
+
+                      {event.status === "pending" ||
+                      event.status === "processing" ? (
+                        <button
+                          type="button"
+                          onClick={() => cancelAutomationEvent(event)}
+                          disabled={isBusy}
+                          className="inline-flex items-center justify-center gap-2 rounded-xl border border-red-400/20 bg-red-400/10 px-3 py-2 text-xs font-bold text-red-300 transition hover:bg-red-400/20 disabled:opacity-60"
+                        >
+                          {isBusy ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <XCircle className="h-4 w-4" />
+                          )}
+                          Cancel
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
+              );
+            })
+          )}
         </div>
       </div>
     </div>

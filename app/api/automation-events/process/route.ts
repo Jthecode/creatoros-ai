@@ -94,6 +94,7 @@ function getNumber(value: unknown, fallback = 0) {
 
 function getLimit(request: NextRequest) {
   const rawLimit = request.nextUrl.searchParams.get("limit");
+
   return Math.min(Math.max(getNumber(rawLimit, 10), 1), 50);
 }
 
@@ -104,8 +105,25 @@ function getAuthSecret(request: NextRequest) {
   return headerSecret || querySecret;
 }
 
+function isVercelCronRequest(request: NextRequest) {
+  const userAgent = request.headers.get("user-agent") || "";
+  const cronHeader = request.headers.get("x-vercel-cron") || "";
+
+  return (
+    userAgent.includes("vercel-cron/1.0") ||
+    cronHeader === "1" ||
+    cronHeader.toLowerCase() === "true"
+  );
+}
+
 function isAuthorized(request: NextRequest) {
-  if (!automationSecret) return false;
+  if (isVercelCronRequest(request)) {
+    return true;
+  }
+
+  if (!automationSecret) {
+    return false;
+  }
 
   return getAuthSecret(request) === automationSecret;
 }
@@ -143,6 +161,7 @@ function buildEmailHtml(options: {
     <meta charset="utf-8" />
     <title>${escapeHtml(subject)}</title>
   </head>
+
   <body style="margin:0;background:#050505;padding:32px 16px;font-family:Arial,Helvetica,sans-serif;color:#ffffff;">
     <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
       <tr>
@@ -187,12 +206,18 @@ function buildEmailHtml(options: {
 }
 
 async function markEventProcessing(event: AutomationEventRow) {
+  const nextAttempts = Number(event.attempts ?? 0) + 1;
+
   const { data, error } = await supabaseAdmin
     .from("automation_events")
     .update({
       status: "processing",
-      attempts: Number(event.attempts ?? 0) + 1,
+      attempts: nextAttempts,
       last_error: null,
+      metadata: {
+        ...(event.metadata || {}),
+        processingStartedAt: new Date().toISOString(),
+      },
     })
     .eq("id", event.id)
     .eq("status", "pending")
@@ -205,10 +230,10 @@ async function markEventProcessing(event: AutomationEventRow) {
 }
 
 async function markEventSent(options: {
-  eventId: string;
+  event: AutomationEventRow;
   resendId?: string | null;
 }) {
-  const { eventId, resendId } = options;
+  const { event, resendId } = options;
 
   const { error } = await supabaseAdmin
     .from("automation_events")
@@ -217,12 +242,13 @@ async function markEventSent(options: {
       sent_at: new Date().toISOString(),
       last_error: null,
       metadata: {
+        ...(event.metadata || {}),
         deliveryProvider: "resend",
         resendId: resendId || null,
         processedAt: new Date().toISOString(),
       },
     })
-    .eq("id", eventId);
+    .eq("id", event.id);
 
   if (error) throw error;
 }
@@ -232,7 +258,7 @@ async function markEventFailed(options: {
   errorMessage: string;
 }) {
   const { event, errorMessage } = options;
-  const attempts = Number(event.attempts ?? 0) + 1;
+  const attempts = Number(event.attempts ?? 0);
 
   const nextStatus = attempts >= 3 ? "failed" : "pending";
 
@@ -289,7 +315,7 @@ function shouldSendEmail(event: AutomationEventRow) {
     };
   }
 
-  if (event.status !== "pending") {
+  if (event.status !== "processing") {
     return {
       ok: false,
       reason: `Event status is ${event.status}.`,
@@ -364,7 +390,7 @@ async function processEvent(event: AutomationEventRow): Promise<ProcessResult> {
     }
 
     await markEventSent({
-      eventId: processingEvent.id,
+      event: processingEvent,
       resendId: emailResult.data?.id || null,
     });
 
@@ -389,6 +415,28 @@ async function processEvent(event: AutomationEventRow): Promise<ProcessResult> {
   }
 }
 
+async function processPendingAutomationEvents(request: NextRequest) {
+  const limit = getLimit(request);
+  const events = await loadPendingEvents(limit);
+
+  const results: ProcessResult[] = [];
+
+  for (const event of events) {
+    const result = await processEvent(event);
+    results.push(result);
+  }
+
+  return {
+    processed: results.length,
+    results,
+    totals: {
+      sent: results.filter((result) => result.status === "sent").length,
+      failed: results.filter((result) => result.status === "failed").length,
+      skipped: results.filter((result) => result.status === "skipped").length,
+    },
+  };
+}
+
 export async function POST(request: NextRequest) {
   try {
     if (!isAuthorized(request)) {
@@ -401,25 +449,11 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const limit = getLimit(request);
-    const events = await loadPendingEvents(limit);
-
-    const results: ProcessResult[] = [];
-
-    for (const event of events) {
-      const result = await processEvent(event);
-      results.push(result);
-    }
+    const result = await processPendingAutomationEvents(request);
 
     return NextResponse.json({
       success: true,
-      processed: results.length,
-      results,
-      totals: {
-        sent: results.filter((result) => result.status === "sent").length,
-        failed: results.filter((result) => result.status === "failed").length,
-        skipped: results.filter((result) => result.status === "skipped").length,
-      },
+      ...result,
     });
   } catch (error) {
     console.error("Automation processor error:", error);
@@ -446,15 +480,34 @@ export async function GET(request: NextRequest) {
       );
     }
 
+    const shouldProcess =
+      request.nextUrl.searchParams.get("process") === "1" ||
+      isVercelCronRequest(request);
+
+    if (shouldProcess) {
+      const result = await processPendingAutomationEvents(request);
+
+      return NextResponse.json({
+        success: true,
+        route: "CreatorOS AI Automation Event Processor",
+        mode: isVercelCronRequest(request) ? "vercel_cron" : "manual_get",
+        resendConfigured: Boolean(resendApiKey),
+        fromEmail,
+        ...result,
+      });
+    }
+
     const limit = getLimit(request);
     const events = await loadPendingEvents(limit);
 
     return NextResponse.json({
       success: true,
       route: "CreatorOS AI Automation Event Processor",
+      mode: "inspect",
       pendingCount: events.length,
       resendConfigured: Boolean(resendApiKey),
       fromEmail,
+      cronAuthorized: isVercelCronRequest(request),
       events: events.map((event) => ({
         id: event.id,
         eventType: event.event_type,
